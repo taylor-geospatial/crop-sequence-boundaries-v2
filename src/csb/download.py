@@ -69,8 +69,8 @@ def _download_one(
 
     try:
         urllib.request.urlretrieve(url, zip_path, reporthook=_hook)
-    except Exception as e:
-        logger.error("%s: Download failed: %s", year, e)
+    except Exception:
+        logger.exception("%s: Download failed", year)
         progress.update(task, description=f"[red]{year} FAILED")
         if zip_path.exists():
             zip_path.unlink()
@@ -116,26 +116,28 @@ def download_cdl(
     output_dir.mkdir(parents=True, exist_ok=True)
     extracted: list[Path] = []
 
-    with Progress(
-        TextColumn("{task.description}"),
-        BarColumn(),
-        DownloadColumn(),
-        TransferSpeedColumn(),
-        TimeRemainingColumn(),
-    ) as progress:
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            futures = {
-                ex.submit(_download_one, y, output_dir, resolution, overwrite, progress): y
-                for y in years
-            }
-            for fut in as_completed(futures):
-                year = futures[fut]
-                try:
-                    path = fut.result()
-                except Exception as e:
-                    logger.error("%s: worker error: %s", year, e)
-                    continue
-                if path is not None:
-                    extracted.append(path)
+    with (
+        Progress(
+            TextColumn("{task.description}"),
+            BarColumn(),
+            DownloadColumn(),
+            TransferSpeedColumn(),
+            TimeRemainingColumn(),
+        ) as progress,
+        ThreadPoolExecutor(max_workers=workers) as ex,
+    ):
+        futures = {
+            ex.submit(_download_one, y, output_dir, resolution, overwrite, progress): y
+            for y in years
+        }
+        for fut in as_completed(futures):
+            year = futures[fut]
+            try:
+                path = fut.result()
+            except Exception:
+                logger.exception("%s: worker error", year)
+                continue
+            if path is not None:
+                extracted.append(path)
 
     return extracted

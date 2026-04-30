@@ -7,7 +7,6 @@ import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 from typing import TYPE_CHECKING, Any
 
-import pyarrow as pa
 from contourrs import shapes_arrow
 from exactextract import exact_extract
 
@@ -17,6 +16,7 @@ if TYPE_CHECKING:
 
     import geopandas as gpd
     import numpy as np
+    import pyarrow as pa
 
 logger = logging.getLogger(__name__)
 

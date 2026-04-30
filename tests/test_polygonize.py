@@ -41,10 +41,10 @@ def test_combine_years_windowed(tmp_path: "Path") -> None:
     """Stack windows across years and return combo_raster + effective_per_combo + cdl_per_combo_year."""
     years = [2020, 2021, 2022]
     _make_national_cdl(tmp_path, years, size=20)
-    window = Window(0, 0, 20, 20)  # type: ignore[call-arg]
+    window = Window(col_off=0, row_off=0, width=20, height=20)  # ty: ignore[unknown-argument]
 
-    combo_raster, effective_per_combo, cdl_per_combo_year, _transform = (
-        _combine_years_windowed(tmp_path, years, window)
+    combo_raster, effective_per_combo, cdl_per_combo_year, _transform = _combine_years_windowed(
+        tmp_path, years, window
     )
 
     assert combo_raster.shape == (20, 20)
@@ -90,9 +90,9 @@ def test_combine_years_counts_correctly(tmp_path: "Path") -> None:
     with rasterio.open(year3_dir / "2022_30m_cdls.tif", "w", **profile) as dst:
         dst.write(np.zeros((5, 5), dtype=np.uint8), 1)
 
-    window = Window(0, 0, 5, 5)  # type: ignore[call-arg]
-    combo_raster, effective_per_combo, cdl_per_combo_year, _transform = (
-        _combine_years_windowed(tmp_path, [2020, 2021, 2022], window)
+    window = Window(col_off=0, row_off=0, width=5, height=5)  # ty: ignore[unknown-argument]
+    combo_raster, effective_per_combo, cdl_per_combo_year, _transform = _combine_years_windowed(
+        tmp_path, [2020, 2021, 2022], window
     )
 
     assert len(effective_per_combo) == 1

@@ -11,7 +11,7 @@ Phase 1 (memory-heavy, raster-side):
    combo IDs.
 3. Connected-components label the masked combo raster (one label per
    connected polygon region).
-4. Compute polygon areas analytically (pixel count × pixel_area).
+4. Compute polygon areas analytically (pixel count x pixel_area).
 5. Run multi-pass elimination on the LABEL RASTER: count adjacent-pixel-edge
    pairs as shared boundary length, merge small labels into the non-small
    neighbor with the longest shared boundary, union-find resolve transitive
@@ -42,7 +42,7 @@ import rasterio.windows
 import shapely
 from rasterio.windows import Window
 
-from csb.config import BARREN_CODE, CDL_CROP_MAX, CDL_PIXEL_AREA_SQM
+from csb.config import BARREN_CODE, CDL_CROP_MAX
 from csb.io import write_geoparquet
 from csb.raster_eliminate import (
     dissolve_same_combo,
@@ -69,7 +69,7 @@ def _tile_windows(width: int, height: int, tile_size: int) -> list[tuple[str, Wi
         for col_idx, x_off in enumerate(range(0, width, tile_size)):
             w = min(tile_size, width - x_off)
             name = f"{row_label}{col_idx}"
-            window = Window(x_off, y_off, w, h)  # type: ignore[call-arg]
+            window = Window(col_off=x_off, row_off=y_off, width=w, height=h)  # ty: ignore[unknown-argument]
             tiles.append((name, window))
     return tiles
 
@@ -91,7 +91,7 @@ def _combine_years_windowed(
     """
     # Memory budget: only seq_ids is materialized as int64 (one HxW buffer).
     # Per-year CDL reads stay uint8 → cast to int64 only inline during the
-    # multiply-add. This avoids an 8× transient copy at peak.
+    # multiply-add. This avoids an 8x transient copy at peak.
     base = np.int64(300)
     seq_ids: np.ndarray | None = None
     transform = None
@@ -264,9 +264,7 @@ def _phase1_polygonize(args: tuple[str, dict[str, Any]]) -> str:
     pq.write_table(out_table, out_path, compression="zstd")
 
     elapsed = time.perf_counter() - t0
-    logger.info(
-        "%s: Phase 1 done — %s polygons in %.1fs", area, out_table.num_rows, elapsed
-    )
+    logger.info("%s: Phase 1 done — %s polygons in %.1fs", area, out_table.num_rows, elapsed)
     return f"Phase1 {area} ({out_table.num_rows} polygons, {elapsed:.0f}s)"
 
 
@@ -297,9 +295,7 @@ def _phase2_simplify(args: tuple[str, dict[str, Any]]) -> str:
     geoms = shapely.from_wkb(np.asarray(table["geometry"]))
 
     logger.info("%s: coverage_simplify %s polygons (tol=%sm)", area, len(geoms), simplify_tol)
-    geoms_simp = shapely.coverage_simplify(
-        geoms, tolerance=simplify_tol, simplify_boundary=True
-    )
+    geoms_simp = shapely.coverage_simplify(geoms, tolerance=simplify_tol, simplify_boundary=True)
 
     areas = shapely.area(geoms_simp)
     keep = areas >= min_area_keep
@@ -387,9 +383,7 @@ def run_polygonize(
 
     default_workers = worker_count(cfg["global"]["cpu_fraction"])
     phase1_workers = pcfg.get("phase1_workers", max(1, default_workers // 4))
-    phase2_workers = (
-        pcfg.get("phase2_workers") or pcfg.get("max_workers") or default_workers
-    )
+    phase2_workers = pcfg.get("phase2_workers") or pcfg.get("max_workers") or default_workers
 
     first_cdl = national_cdl / str(start_year) / f"{start_year}_30m_cdls.tif"
     with rasterio.open(first_cdl) as src:
@@ -403,12 +397,10 @@ def run_polygonize(
     phase1_done = {f.stem for f in intermediate_dir.glob("*.parquet")}
 
     phase1_remaining = [
-        (name, win) for name, win in all_tiles
-        if name not in done and name not in phase1_done
+        (name, win) for name, win in all_tiles if name not in done and name not in phase1_done
     ]
     phase2_pending = [
-        (name, win) for name, win in all_tiles
-        if name in phase1_done and name not in done
+        (name, win) for name, win in all_tiles if name in phase1_done and name not in done
     ]
 
     console.print(
@@ -476,8 +468,8 @@ def run_polygonize(
             name = p1_futures[fut]
             try:
                 msg = fut.result()
-            except Exception as e:
-                logger.exception("%s: phase1 failed: %s", name, e)
+            except Exception:
+                logger.exception("%s: phase1 failed", name)
                 continue
             if msg.startswith("Phase1"):
                 p1_completed += 1
@@ -491,8 +483,8 @@ def run_polygonize(
             name = p2_futures[fut]
             try:
                 msg = fut.result()
-            except Exception as e:
-                logger.exception("%s: phase2 failed: %s", name, e)
+            except Exception:
+                logger.exception("%s: phase2 failed", name)
                 continue
             if msg.startswith("Finished"):
                 p2_completed += 1

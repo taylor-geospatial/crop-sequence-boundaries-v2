@@ -25,6 +25,7 @@ import pyarrow.parquet as pq
 import pyogrio
 import rasterio
 import shapely
+from rasterio.windows import Window
 
 from csb.config import load_config
 from csb.polygonize import _tile_windows
@@ -42,20 +43,22 @@ REGIONS = [
 ]
 
 
-def find_tile(target_x: float, target_y: float, tile_size: int, sample_path: Path):
+def find_tile(
+    target_x: float, target_y: float, tile_size: int, sample_path: Path
+) -> tuple[str, Window]:
     with rasterio.open(sample_path) as src:
         T = src.transform
         W, H = src.width, src.height
     tiles = _tile_windows(W, H, tile_size)
 
-    def dist(nw):
+    def dist(nw: tuple[str, Window]) -> float:
         cx, cy = T * (nw[1].col_off + nw[1].width / 2, nw[1].row_off + nw[1].height / 2)
         return (cx - target_x) ** 2 + (cy - target_y) ** 2
 
     return min(tiles, key=dist)
 
 
-def tile_bbox(window, sample_path: Path):
+def tile_bbox(window: Window, sample_path: Path) -> tuple[float, float, float, float]:
     with rasterio.open(sample_path) as src:
         T = src.transform
     left, top = T * (window.col_off, window.row_off)
@@ -75,9 +78,18 @@ def run_pipeline(config_path: str, area: str, years: list[int], output_root: Pat
     if not (poly_dir / f"{area}.parquet").exists():
         subprocess.run(
             [
-                "uv", "run", "csb", "--config", config_path,
-                "polygonize", str(sy), str(ey),
-                "--area", area, "--output", str(poly_dir),
+                "uv",
+                "run",
+                "csb",
+                "--config",
+                config_path,
+                "polygonize",
+                str(sy),
+                str(ey),
+                "--area",
+                area,
+                "--output",
+                str(poly_dir),
             ],
             check=True,
         )
@@ -85,10 +97,18 @@ def run_pipeline(config_path: str, area: str, years: list[int], output_root: Pat
     if not (pp_dir / "national" / f"CSB{str(sy)[2:]}{str(ey)[2:]}.parquet").exists():
         subprocess.run(
             [
-                "uv", "run", "csb", "--config", config_path,
-                "postprocess", str(sy), str(ey),
-                "--polygonize-dir", str(poly_dir),
-                "--output", str(pp_dir),
+                "uv",
+                "run",
+                "csb",
+                "--config",
+                config_path,
+                "postprocess",
+                str(sy),
+                str(ey),
+                "--polygonize-dir",
+                str(poly_dir),
+                "--output",
+                str(pp_dir),
             ],
             check=True,
         )
@@ -96,7 +116,9 @@ def run_pipeline(config_path: str, area: str, years: list[int], output_root: Pat
     return pp_dir / "national" / f"CSB{str(sy)[2:]}{str(ey)[2:]}.parquet"
 
 
-def compute_parity(national_parquet: Path, gdb_path: Path, bbox) -> dict:
+def compute_parity(
+    national_parquet: Path, gdb_path: Path, bbox: tuple[float, float, float, float]
+) -> dict:
     """Dissolved-union IoU + per-tile feature/area stats."""
     ours = pq.read_table(national_parquet)
     n_ours = ours.num_rows
@@ -105,15 +127,22 @@ def compute_parity(national_parquet: Path, gdb_path: Path, bbox) -> dict:
     usda = pyogrio.read_dataframe(
         str(gdb_path), layer="national1825", bbox=bbox, columns=["CSBID", "CSBACRES"]
     )
-    n_usda = int(len(usda))
+    n_usda = len(usda)
     usda_acres = float(usda["CSBACRES"].sum())
 
     if n_ours == 0 and n_usda == 0:
         return {
-            "n_ours": 0, "n_usda": 0, "ours_acres": 0, "usda_acres": 0,
-            "ours_dissolved_km2": 0, "usda_dissolved_km2": 0,
-            "intersection_km2": 0, "union_km2": 0, "iou": None,
-            "ratio_polys": None, "ratio_acres": None,
+            "n_ours": 0,
+            "n_usda": 0,
+            "ours_acres": 0,
+            "usda_acres": 0,
+            "ours_dissolved_km2": 0,
+            "usda_dissolved_km2": 0,
+            "intersection_km2": 0,
+            "union_km2": 0,
+            "iou": None,
+            "ratio_polys": None,
+            "ratio_acres": None,
         }
 
     conn = duckdb.connect()
@@ -138,17 +167,24 @@ def compute_parity(national_parquet: Path, gdb_path: Path, bbox) -> dict:
                    ST_Area(ST_Union(au.g, bu.g))/1e6
             FROM au, bu
         """).fetchone()
+        assert r is not None
         oa, ua, inter, uni = r
         iou = inter / uni if uni else None
     elif n_ours > 0:
-        oa = conn.execute("SELECT ST_Area(ST_Union_Agg(ST_MakeValid(ST_GeomFromWKB(g::BLOB))))/1e6 FROM ours").fetchone()[0]
+        r1 = conn.execute(
+            "SELECT ST_Area(ST_Union_Agg(ST_MakeValid(ST_GeomFromWKB(g::BLOB))))/1e6 FROM ours"
+        ).fetchone()
+        assert r1 is not None
+        oa = r1[0]
         ua, inter, uni, iou = 0.0, 0.0, oa, 0.0
     else:
-        ua = conn.execute(f"""
+        r2 = conn.execute(f"""
             SELECT ST_Area(ST_Union_Agg(ST_Intersection(ST_MakeValid(ST_GeomFromWKB(g::BLOB)),
                                                         ST_MakeEnvelope({bx0},{by0},{bx1},{by1}))))/1e6
             FROM usda
-        """).fetchone()[0]
+        """).fetchone()
+        assert r2 is not None
+        ua = r2[0]
         oa, inter, uni, iou = 0.0, 0.0, ua, 0.0
     conn.close()
 
@@ -167,7 +203,7 @@ def compute_parity(national_parquet: Path, gdb_path: Path, bbox) -> dict:
     }
 
 
-def main():
+def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="configs/local.yaml")
     ap.add_argument("--gdb", default="data/CSB1825.gdb")
@@ -180,9 +216,7 @@ def main():
 
     cfg = load_config(args.config)
     sample = (
-        Path(cfg["paths"]["national_cdl"])
-        / str(args.years[0])
-        / f"{args.years[0]}_30m_cdls.tif"
+        Path(cfg["paths"]["national_cdl"]) / str(args.years[0]) / f"{args.years[0]}_30m_cdls.tif"
     )
     output_root = Path(args.output_root)
     regions = REGIONS if not args.regions else [r for r in REGIONS if r[0] in args.regions]
@@ -224,14 +258,20 @@ def main():
         print(
             f"    ours: {rec['n_ours']:>7,} polys / {rec['ours_acres']:>10,.0f} acres  |"
             f"  USDA: {rec['n_usda']:>7,} polys / {rec['usda_acres']:>10,.0f} acres  |"
-            f"  IoU: {rec['iou']:.4f}" if rec.get("iou") is not None
+            f"  IoU: {rec['iou']:.4f}"
+            if rec.get("iou") is not None
             else f"    ours: {rec['n_ours']} / {rec['ours_acres']:.0f}  USDA: {rec['n_usda']}  IoU: n/a"
         )
 
     Path(args.report).parent.mkdir(parents=True, exist_ok=True)
     with open(args.report, "w") as f:
         json.dump(
-            {"config": str(args.config), "years": args.years, "tile_size": args.tile_size, "results": results},
+            {
+                "config": str(args.config),
+                "years": args.years,
+                "tile_size": args.tile_size,
+                "results": results,
+            },
             f,
             indent=2,
         )

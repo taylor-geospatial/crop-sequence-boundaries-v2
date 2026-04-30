@@ -20,15 +20,11 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
-import geopandas as gpd
-import numpy as np
-import pyarrow as pa
 from rich.console import Console
-from shapely import from_wkb
 
-from csb.config import ACRES_PER_SQM, DEFAULT_CRS, STATE_FIPS
+from csb.config import ACRES_PER_SQM, STATE_FIPS
 from csb.io import write_geoparquet
-from csb.utils import parallel_map, parallel_starmap, worker_count, zonal_majority
+from csb.utils import parallel_map, parallel_starmap, worker_count
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +82,6 @@ def _enrich_tile(args: tuple[Path, dict[str, Any]]) -> str:
     end_year: int = params["end_year"]
     output_dir = Path(params["output_dir"])
     boundaries_path = Path(cfg["paths"]["boundaries"])
-    national_cdl = Path(cfg["paths"]["national_cdl"])
 
     area_name = parquet_path.stem
     csb_years = f"{str(start_year)[2:]}{str(end_year)[2:]}"
@@ -118,9 +113,11 @@ def _enrich_tile(args: tuple[Path, dict[str, Any]]) -> str:
     # from the combine sequence per polygon, no zonal stats needed). Just
     # materialize, close DuckDB, write GeoParquet.
     logger.info("%s: Materializing %s polygons -> final parquet", area_name, count)
-    out_table = conn.execute(
-        "SELECT * EXCLUDE (row_id) REPLACE (ST_AsWKB(geometry) AS geometry) FROM area"
-    ).arrow().read_all()
+    out_table = (
+        conn.execute("SELECT * EXCLUDE (row_id) REPLACE (ST_AsWKB(geometry) AS geometry) FROM area")
+        .arrow()
+        .read_all()
+    )
     conn.close()
     del conn
 

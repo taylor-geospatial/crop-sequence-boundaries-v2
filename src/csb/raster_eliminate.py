@@ -39,9 +39,7 @@ def label_raster(combo_raster: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray
     return lbl, int(lbl.max())
 
 
-def label_to_combo_map(
-    lbl: np.ndarray, combo_raster: np.ndarray, n_labels: int
-) -> np.ndarray:
+def label_to_combo_map(lbl: np.ndarray, combo_raster: np.ndarray, n_labels: int) -> np.ndarray:
     """For each label id, return the underlying combo_id."""
     flat_lbl = lbl.ravel()
     flat_combo = combo_raster.ravel()
@@ -51,7 +49,9 @@ def label_to_combo_map(
     return out
 
 
-def label_areas(lbl: np.ndarray, n_labels: int, pixel_area: float = CDL_PIXEL_AREA_SQM) -> np.ndarray:
+def label_areas(
+    lbl: np.ndarray, n_labels: int, pixel_area: float = CDL_PIXEL_AREA_SQM
+) -> np.ndarray:
     """Polygon area in sq m for each label id (index 0 = background = 0)."""
     counts = np.bincount(lbl.ravel(), minlength=n_labels + 1).astype(np.int64)
     return (counts * pixel_area).astype(np.float64)
@@ -179,7 +179,7 @@ def eliminate_pass(
     rank = np.zeros(n_labels + 1, dtype=np.int32)
 
     # Process in ascending small_id (order doesn't matter much here).
-    for s, t in zip(pick_small, pick_target):
+    for s, t in zip(pick_small, pick_target, strict=True):
         _uf_union(parent, rank, int(s), int(t))
 
     # Path-compress: for each label, find its root.
@@ -256,7 +256,7 @@ def dissolve_same_combo(
 
     parent = np.arange(n_labels + 1, dtype=np.int32)
     rank = np.zeros(n_labels + 1, dtype=np.int32)
-    for x, y in zip(pa_, pb_):
+    for x, y in zip(pa_, pb_, strict=True):
         _uf_union(parent, rank, int(x), int(y))
 
     remap = np.arange(n_labels + 1, dtype=np.int32)
