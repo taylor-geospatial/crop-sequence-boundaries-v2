@@ -115,6 +115,7 @@ def postprocess(
     help="Pixel resolution in meters. 10m only available for 2024+.",
 )
 @click.option("--overwrite", is_flag=True, help="Re-download existing files.")
+@click.option("--workers", "-w", type=int, default=4, help="Concurrent download workers.")
 @click.pass_context
 def download(
     ctx: click.Context,
@@ -123,6 +124,7 @@ def download(
     output: str | None,
     resolution: str,
     overwrite: bool,
+    workers: int,
 ) -> None:
     """Download USDA CDL rasters for the given year range."""
     from csb.download import download_cdl
@@ -131,8 +133,13 @@ def download(
     out = Path(output) if output else Path(cfg["paths"]["national_cdl"])
     years = list(range(start_year, end_year + 1))
 
-    console.print(f"[bold]Downloading CDL {start_year}-{end_year} ({resolution}m) to {out}")
-    paths = download_cdl(years, out, resolution=int(resolution), overwrite=overwrite)
+    console.print(
+        f"[bold]Downloading CDL {start_year}-{end_year} ({resolution}m) to {out} "
+        f"with {workers} workers"
+    )
+    paths = download_cdl(
+        years, out, resolution=int(resolution), overwrite=overwrite, workers=workers
+    )
     console.print(f"[bold green]Downloaded {len(paths)} CDL rasters")
     for p in paths:
         console.print(f"  {p}")

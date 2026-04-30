@@ -1,6 +1,6 @@
 [build-system]
 build-backend = "uv_build"
-requires = [ "uv-build>=0.9.3,<0.10" ]
+requires = [ "uv-build>=0.9.3,<1.0" ]
 
 [project]
 name = "csb"
@@ -33,7 +33,7 @@ dependencies = [
   "pyyaml>=6,<7",
   "rasterio>=1,<2",
   "rich>=14,<15",
-  "sedonadb>=0.3",
+  "scikit-image>=0.24,<1",
   "shapely>=2,<3",
 ]
 urls.Homepage = "https://github.com/isaaccorley/crop-sequence-boundaries-v2"

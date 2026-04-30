@@ -14,8 +14,10 @@ import yaml
 CDL_CROP_MAX = 81  # inclusive: CDL in [1, CDL_CROP_MAX] treated as cropland
 
 # Sentinel value assigned to non-cropland pixels before packing sequences.
-# Must be distinct from all valid CDL crop classes (1-81).
-BARREN_CODE = 45
+# Must be distinct from all valid CDL crop classes (1-81). Old value of 45
+# collided with CDL 45 (sugarcane), causing real sugarcane fields in
+# Florida/Louisiana to be silently dropped from CSB output.
+BARREN_CODE = 254
 
 # 30m CDL pixel area in sq metres (EPSG:5070 Albers Equal Area, so exact).
 CDL_PIXEL_AREA_SQM = 900

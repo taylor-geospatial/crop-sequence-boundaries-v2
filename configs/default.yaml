@@ -16,10 +16,12 @@ paths:
   boundaries: data/input/boundaries/US48_ASD_CNTY_Albers.parquet
 
 polygonize:
-  # Polygon elimination area thresholds (sq meters, ascending)
-  eliminate_thresholds: [100, 1000, 10000]
+  # Polygon elimination area thresholds (sq meters, ascending) — matches USDA
+  # CSBElimination.py 4-pass [100, 1000, 10000, 10000].
+  eliminate_thresholds: [100, 1000, 10000, 10000]
   # Minimum polygon area to keep (sq meters)
   min_polygon_area: 10000
-  # Douglas-Peucker simplification tolerance (meters)
+  # Boundary simplification tolerance (meters). Applied via shapely
+  # coverage_simplify (preserves shared boundaries between neighbors).
   simplify_tolerance: 60
 

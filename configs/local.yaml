@@ -12,7 +12,7 @@ polygonize:
   phase1_workers: 8       # memory-heavy: raster I/O + polygonize
   phase2_workers: 16       # CPU-bound: eliminate + simplify
   tile_size: 5000
-  eliminate_thresholds: [100, 1000, 10000]
+  eliminate_thresholds: [100, 1000, 10000, 10000]
   min_polygon_area: 10000
   simplify_tolerance: 60
 

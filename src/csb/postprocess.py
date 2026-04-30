@@ -21,6 +21,7 @@ from typing import Any
 
 import duckdb
 import geopandas as gpd
+import numpy as np
 import pyarrow as pa
 from rich.console import Console
 from shapely import from_wkb
@@ -48,6 +49,9 @@ def _spatial_join_boundaries(
     else:
         conn.execute(f"CREATE TABLE boundaries AS SELECT * FROM ST_Read('{boundaries_path}')")
 
+    # ST_MakeValid wraps both sides because (a) coverage_simplify can produce
+    # degenerate edges and (b) TIGER county polygons occasionally have
+    # ring-self-intersections that GEOS rejects.
     conn.execute("""
         CREATE TABLE area_joined AS
         WITH ranked AS (
@@ -61,8 +65,8 @@ def _spatial_join_boundaries(
                 ROW_NUMBER() OVER (
                     PARTITION BY a.row_id
                     ORDER BY ST_Area(ST_Intersection(
-                        a.geometry,
-                        b.geometry
+                        ST_MakeValid(a.geometry),
+                        ST_MakeValid(b.geometry)
                     )) DESC
                 ) AS rn
             FROM area a
@@ -110,42 +114,18 @@ def _enrich_tile(args: tuple[Path, dict[str, Any]]) -> str:
         conn.close()
         return f"Skipped {area_name} (empty after join)"
 
-    logger.info("%s: Rasterizing %s polygons for zonal stats", area_name, count)
-    result = conn.execute("SELECT row_id, geometry FROM area").fetchall()
-    row_ids = [r[0] for r in result]
-    geoms = [from_wkb(r[1]) for r in result]
-    gdf = gpd.GeoDataFrame({"zone_id": row_ids}, geometry=geoms, crs=DEFAULT_CRS)
+    # CDL{year} columns are pre-computed by polygonize phase 1 (looked up
+    # from the combine sequence per polygon, no zonal stats needed). Just
+    # materialize, close DuckDB, write GeoParquet.
+    logger.info("%s: Materializing %s polygons -> final parquet", area_name, count)
+    out_table = conn.execute(
+        "SELECT * EXCLUDE (row_id) REPLACE (ST_AsWKB(geometry) AS geometry) FROM area"
+    ).arrow().read_all()
+    conn.close()
+    del conn
 
-    for year in range(start_year, end_year + 1):
-        logger.info("%s: Zonal stats %s", area_name, year)
-        cdl_path = national_cdl / str(year) / f"{year}_30m_cdls.tif"
-        zone_to_cdl = zonal_majority(gdf, "zone_id", cdl_path)
-
-        col = f"CDL{year}"
-        conn.execute(f"ALTER TABLE area ADD COLUMN {col} INTEGER")
-
-        if zone_to_cdl:
-            zonal_table = pa.table(
-                {
-                    "zone_id": pa.array(list(zone_to_cdl.keys()), type=pa.int64()),
-                    "cdl_val": pa.array(list(zone_to_cdl.values()), type=pa.int32()),
-                }
-            )
-            conn.register("zonal_tmp", zonal_table)
-            conn.execute(f"""
-                UPDATE area SET {col} = z.cdl_val
-                FROM zonal_tmp z
-                WHERE area.row_id = z.zone_id
-            """)
-            conn.unregister("zonal_tmp")
-
-    conn.execute(f"DELETE FROM area WHERE CDL{end_year} IS NULL")
-
-    logger.info("%s: Exporting enriched parquet", area_name)
-    out_table = conn.execute("SELECT * EXCLUDE (row_id) FROM area").arrow().read_all()
     out_path = output_dir / f"{area_name}.parquet"
     write_geoparquet(out_table, out_path)
-    conn.close()
 
     elapsed = (time.perf_counter() - t0) / 60
     logger.info("%s: Done in %.2f min", area_name, elapsed)
@@ -179,7 +159,12 @@ def _compute_fields(conn: duckdb.DuckDBPyConnection) -> None:
     """Add derived fields: CSBACRES, INSIDE_X, INSIDE_Y, final CSBID."""
     conn.execute(f"""
         ALTER TABLE national ADD COLUMN IF NOT EXISTS CSBACRES DOUBLE;
-        UPDATE national SET CSBACRES = ST_Area(geometry) * {ACRES_PER_SQM};
+        ALTER TABLE national ADD COLUMN IF NOT EXISTS Shape_area DOUBLE;
+        ALTER TABLE national ADD COLUMN IF NOT EXISTS Shape_Length DOUBLE;
+        UPDATE national SET
+            Shape_area = ST_Area(geometry),
+            Shape_Length = ST_Perimeter(geometry),
+            CSBACRES = ST_Area(geometry) * {ACRES_PER_SQM};
     """)
     conn.execute("""
         ALTER TABLE national ADD COLUMN IF NOT EXISTS INSIDE_X DOUBLE;
