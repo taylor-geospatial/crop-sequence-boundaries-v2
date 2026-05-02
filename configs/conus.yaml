@@ -1,0 +1,19 @@
+# CONUS run config — 32-core node, 256GB.
+global:
+  cpu_fraction: 0.95
+  min_cropland_years: 2
+
+paths:
+  output: data/output/conus
+  national_cdl: data/input/national_cdl
+  boundaries: data/input/boundaries/US48_ASD_CNTY_Albers.parquet
+
+polygonize:
+  # Bump phase1_workers since it's the dominant stage. 16 workers x ~1GB peak
+  # per worker = 16GB, well within 256GB budget.
+  phase1_workers: 16
+  phase2_workers: 16
+  tile_size: 5000
+  eliminate_thresholds: [100, 1000, 10000, 10000]
+  min_polygon_area: 10000
+  simplify_tolerance: 60
