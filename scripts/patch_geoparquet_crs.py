@@ -33,7 +33,7 @@ def patch(p: Path) -> tuple[bool, str]:
     geo = json.loads(meta.metadata[b"geo"])
     cols = geo.get("columns", {})
     needs_patch = False
-    for _name, info in cols.items():
+    for info in cols.values():
         crs = info.get("crs")
         if isinstance(crs, dict) and "type" not in crs and "id" in crs:
             authority = crs["id"].get("authority")

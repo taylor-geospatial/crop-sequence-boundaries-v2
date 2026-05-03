@@ -50,8 +50,9 @@ def prep_ours(conn: duckdb.DuckDBPyConnection, src: Path, dst: Path) -> None:
             )
         ) TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 50000)
     """)
-    print(f"  done in {time.perf_counter() - t0:.1f}s, "
-          f"{dst.stat().st_size / 1e9:.2f} GB", flush=True)
+    print(
+        f"  done in {time.perf_counter() - t0:.1f}s, {dst.stat().st_size / 1e9:.2f} GB", flush=True
+    )
 
 
 def prep_usda(conn: duckdb.DuckDBPyConnection, gdb: Path, dst: Path) -> None:
@@ -88,15 +89,14 @@ def prep_usda(conn: duckdb.DuckDBPyConnection, gdb: Path, dst: Path) -> None:
             )
         ) TO '{dst}' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 50000)
     """)
-    print(f"  wrote {dst.stat().st_size / 1e9:.2f} GB in {time.perf_counter() - t0:.1f}s", flush=True)
+    print(
+        f"  wrote {dst.stat().st_size / 1e9:.2f} GB in {time.perf_counter() - t0:.1f}s", flush=True
+    )
 
 
 def main() -> None:
-    if len(sys.argv) > 1:
-        # Subset for testing.
-        which = sys.argv[1]
-    else:
-        which = "both"
+    # Subset selector ("ours", "usda", "both") for testing.
+    which = sys.argv[1] if len(sys.argv) > 1 else "both"
 
     conn = duckdb.connect()
     conn.install_extension("spatial")

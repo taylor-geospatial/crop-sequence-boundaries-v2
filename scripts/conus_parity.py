@@ -15,6 +15,7 @@ Aggregate stats printed at the end + JSON dumped.
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -22,26 +23,28 @@ import duckdb
 import numpy as np
 
 REGIONS = [
-    ("iowa_corn_belt",     -100_000, 1_950_000, "high-density corn/soy"),
-    ("illinois_corn",       250_000, 2_000_000, "central IL corn"),
+    ("iowa_corn_belt", -100_000, 1_950_000, "high-density corn/soy"),
+    ("illinois_corn", 250_000, 2_000_000, "central IL corn"),
     ("nebraska_irrigated", -300_000, 1_700_000, "central NE irrigated"),
-    ("kansas_wheat",       -300_000, 1_400_000, "KS winter wheat"),
-    ("texas_panhandle",    -625_000, 1_100_000, "wheat/cotton, large fields"),
-    ("texas_cotton_belt",  -350_000,   900_000, "central TX cotton"),
-    ("mississippi_delta",   250_000, 1_100_000, "cotton/soy/rice"),
-    ("georgia_peanut",      950_000, 1_100_000, "GA peanut/cotton"),
+    ("kansas_wheat", -300_000, 1_400_000, "KS winter wheat"),
+    ("texas_panhandle", -625_000, 1_100_000, "wheat/cotton, large fields"),
+    ("texas_cotton_belt", -350_000, 900_000, "central TX cotton"),
+    ("mississippi_delta", 250_000, 1_100_000, "cotton/soy/rice"),
+    ("georgia_peanut", 950_000, 1_100_000, "GA peanut/cotton"),
     ("central_valley_ca", -2_000_000, 1_650_000, "irrigated specialty crops"),
-    ("imperial_valley_ca",-1_750_000, 1_300_000, "winter veg, irrigated"),
-    ("palouse_wheat",     -1_850_000, 2_850_000, "PNW wheat, large fields"),
-    ("snake_river_id",    -1_500_000, 2_400_000, "ID potatoes / irrigated"),
+    ("imperial_valley_ca", -1_750_000, 1_300_000, "winter veg, irrigated"),
+    ("palouse_wheat", -1_850_000, 2_850_000, "PNW wheat, large fields"),
+    ("snake_river_id", -1_500_000, 2_400_000, "ID potatoes / irrigated"),
     ("northern_plains_nd", -150_000, 2_700_000, "ND wheat / spring grains"),
-    ("wisconsin_mixed",     200_000, 2_400_000, "WI dairy/corn mosaic"),
-    ("ohio_corn_soy",       950_000, 2_100_000, "OH/IN corn/soy"),
-    ("delmarva",          1_700_000, 1_900_000, "Delmarva poultry/soy"),
+    ("wisconsin_mixed", 200_000, 2_400_000, "WI dairy/corn mosaic"),
+    ("ohio_corn_soy", 950_000, 2_100_000, "OH/IN corn/soy"),
+    ("delmarva", 1_700_000, 1_900_000, "Delmarva poultry/soy"),
 ]
 
 
-def find_bbox_5070(target_x: float, target_y: float, tile_size: int = 5000) -> tuple[float, float, float, float]:
+def find_bbox_5070(
+    target_x: float, target_y: float, tile_size: int = 5000
+) -> tuple[float, float, float, float]:
     """EPSG:5070 bbox of the 5000x5000 CDL tile containing (target_x, target_y)."""
     T_left, T_top = -2356095.0, 3172605.0
     px = 30.0
@@ -73,10 +76,7 @@ def parity_for_bbox(
     """
     bx0, by0, bx1, by1 = bbox_5070
     res: dict[str, object] = {"bbox_5070": list(bbox_5070)}
-    bbox_pred = (
-        f"xmax >= {bx0} AND xmin <= {bx1} "
-        f"AND ymax >= {by0} AND ymin <= {by1}"
-    )
+    bbox_pred = f"xmax >= {bx0} AND xmin <= {bx1} AND ymax >= {by0} AND ymin <= {by1}"
 
     # Stage 1: spatial-filter ours.
     t0 = time.perf_counter()
@@ -183,9 +183,9 @@ def main() -> None:
     national = Path(args.national)
     gdb = Path(args.gdb)
     if not national.exists():
-        raise SystemExit(f"missing {national}")
+        sys.exit(f"missing {national}")
     if not gdb.exists():
-        raise SystemExit(f"missing {gdb}")
+        sys.exit(f"missing {gdb}")
 
     selected = REGIONS if not args.regions else [r for r in REGIONS if r[0] in args.regions]
 
@@ -200,8 +200,11 @@ def main() -> None:
     conn.execute("PRAGMA threads=16")
 
     results = []
-    print(f"{'region':<22}{'tile':>10}{'n_ours':>10}{'n_usda':>10}{'ratio_p':>9}"
-          f"{'ratio_a':>9}{'IoU':>8}{'sec':>7}", flush=True)
+    print(
+        f"{'region':<22}{'tile':>10}{'n_ours':>10}{'n_usda':>10}{'ratio_p':>9}"
+        f"{'ratio_a':>9}{'IoU':>8}{'sec':>7}",
+        flush=True,
+    )
     print("-" * 86, flush=True)
     for name, tx, ty, what in selected:
         bbox = find_bbox_5070(tx, ty)
@@ -226,8 +229,11 @@ def main() -> None:
         row = int((T_top - bbox[3]) / (5000 * 30))
         row_label = chr(65 + row) if row < 26 else (chr(65 + row // 26 - 1) + chr(65 + row % 26))
         tile = f"{row_label}{col}"
-        print(f"{name:<22}{tile:>10}{r['n_ours']:>10,}{r['n_usda']:>10,}"
-              f"{ratio_p:>9.2f}{ratio_a:>9.2f}{iou:>8.3f}{elapsed:>7.1f}", flush=True)
+        print(
+            f"{name:<22}{tile:>10}{r['n_ours']:>10,}{r['n_usda']:>10,}"
+            f"{ratio_p:>9.2f}{ratio_a:>9.2f}{iou:>8.3f}{elapsed:>7.1f}",
+            flush=True,
+        )
 
     conn.close()
 
@@ -240,14 +246,20 @@ def main() -> None:
         print()
         print("=== aggregate (IoU-valid regions) ===")
         print(f"  n={len(ok)}/{len(selected)}")
-        print(f"  IoU         mean={np.mean(ious):.3f}  median={np.median(ious):.3f}"
-              f"  min={min(ious):.3f}  max={max(ious):.3f}")
+        print(
+            f"  IoU         mean={np.mean(ious):.3f}  median={np.median(ious):.3f}"
+            f"  min={min(ious):.3f}  max={max(ious):.3f}"
+        )
         if rps:
-            print(f"  poly ratio  mean={np.mean(rps):.2f}  median={np.median(rps):.2f}"
-                  f"  min={min(rps):.2f}  max={max(rps):.2f}")
+            print(
+                f"  poly ratio  mean={np.mean(rps):.2f}  median={np.median(rps):.2f}"
+                f"  min={min(rps):.2f}  max={max(rps):.2f}"
+            )
         if ras:
-            print(f"  acres ratio mean={np.mean(ras):.2f}  median={np.median(ras):.2f}"
-                  f"  min={min(ras):.2f}  max={max(ras):.2f}")
+            print(
+                f"  acres ratio mean={np.mean(ras):.2f}  median={np.median(ras):.2f}"
+                f"  min={min(ras):.2f}  max={max(ras):.2f}"
+            )
 
     Path(args.report).parent.mkdir(parents=True, exist_ok=True)
     with open(args.report, "w") as f:
