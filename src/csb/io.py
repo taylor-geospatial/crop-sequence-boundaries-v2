@@ -16,22 +16,10 @@ def write_geoparquet(
     geometry_column: str = "geometry",
     crs_code: int = 5070,
 ) -> Path:
-    """Write a PyArrow table as GeoParquet with proper geo metadata.
+    """Write a PyArrow table as GeoParquet 1.1.
 
-    The CRS is serialized as full PROJJSON via `pyproj.CRS.to_json_dict()`.
-    The short form `{"id": {"authority": "EPSG", "code": ...}}` lacks the
-    required `"type"` field per PROJJSON spec; pyproj 3.x rejects it with
-    "Internal Proj Error: proj_create: Missing 'type' key", which breaks
-    downstream consumers (geopandas, pyogrio, tippecanoe via gdal).
-
-    Args:
-        table: Arrow table with a WKB geometry column.
-        path: Output file path.
-        geometry_column: Name of the geometry column.
-        crs_code: EPSG code for the CRS.
-
-    Returns:
-        Path to the written file.
+    CRS is serialized as full PROJJSON; the short ``{id: {authority, code}}``
+    form is rejected by pyproj 3.x.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

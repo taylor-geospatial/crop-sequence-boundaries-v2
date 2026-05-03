@@ -1,0 +1,27 @@
+# CSB Pipeline Configuration
+# All paths are POSIX. Override via --config or environment.
+
+global:
+  # Fraction of CPUs to use for parallel processing
+  cpu_fraction: 0.90
+  # Minimum years with cropland (value > 0) to retain a polygon
+  min_cropland_years: 2
+
+paths:
+  # Root output directory for all pipeline artifacts
+  output: data/output
+  # National CDL rasters: {national_cdl}/{year}/{year}_30m_cdls.tif
+  national_cdl: data/input/national_cdl
+  # County/ASD boundary file (GeoParquet or Shapefile)
+  boundaries: data/input/boundaries/US48_ASD_CNTY_Albers.parquet
+
+polygonize:
+  # Polygon elimination area thresholds (sq meters, ascending) — matches USDA
+  # CSBElimination.py 4-pass [100, 1000, 10000, 10000].
+  eliminate_thresholds: [100, 1000, 10000, 10000]
+  # Minimum polygon area to keep (sq meters)
+  min_polygon_area: 10000
+  # Boundary simplification tolerance (meters). Applied via shapely
+  # coverage_simplify (preserves shared boundaries between neighbors).
+  simplify_tolerance: 60
+

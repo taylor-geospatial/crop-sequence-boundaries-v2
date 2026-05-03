@@ -1,15 +1,9 @@
-"""Stage 2: POSTPROCESS — Enrich polygons with boundary/CDL attributes, then distribute.
+"""Postprocess stage: enrich polygons with boundary attributes, then distribute.
 
-Per tile (embarrassingly parallel):
-1. Spatial join with county/ASD boundaries (largest overlap)
-2. Zonal CDL stats per year: majority class via exactextract
-3. Write enriched GeoParquet
-
-Then nationally (single pass):
-4. Merge all enriched tiles into national dataset
-5. Compute CSBACRES, INSIDE_X/Y, CSBID
-6. Write national GeoParquet
-7. Split and export per state
+Per tile, in parallel: spatial-join to county/ASD boundaries (largest overlap),
+write enriched GeoParquet. CDL{year} columns arrive pre-computed from
+polygonize phase 1. Then nationally: merge all tiles, derive CSBID/CSBACRES/
+INSIDE_X,Y, write the national GeoParquet, split by state.
 """
 
 from __future__ import annotations
@@ -29,25 +23,19 @@ from csb.utils import parallel_map, parallel_starmap, worker_count
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Enrich phase helpers
-# ---------------------------------------------------------------------------
-
-
 def _spatial_join_boundaries(
     conn: duckdb.DuckDBPyConnection,
     boundaries_path: Path,
 ) -> None:
-    """Spatial join area polygons with boundary features, keeping largest overlap."""
+    """Spatial-join area polygons to county/ASD boundaries, picking largest overlap."""
     suffix = boundaries_path.suffix.lower()
     if suffix == ".parquet":
         conn.execute(f"CREATE TABLE boundaries AS SELECT * FROM '{boundaries_path}'")
     else:
         conn.execute(f"CREATE TABLE boundaries AS SELECT * FROM ST_Read('{boundaries_path}')")
 
-    # ST_MakeValid wraps both sides because (a) coverage_simplify can produce
-    # degenerate edges and (b) TIGER county polygons occasionally have
-    # ring-self-intersections that GEOS rejects.
+    # ST_MakeValid both sides — coverage_simplify can produce degenerate edges
+    # and TIGER counties occasionally have self-intersecting rings.
     conn.execute("""
         CREATE TABLE area_joined AS
         WITH ranked AS (
@@ -109,10 +97,7 @@ def _enrich_tile(args: tuple[Path, dict[str, Any]]) -> str:
         conn.close()
         return f"Skipped {area_name} (empty after join)"
 
-    # CDL{year} columns are pre-computed by polygonize phase 1 (looked up
-    # from the combine sequence per polygon, no zonal stats needed). Just
-    # materialize, close DuckDB, write GeoParquet.
-    logger.info("%s: Materializing %s polygons -> final parquet", area_name, count)
+    logger.info("%s: writing %s features -> GeoParquet", area_name, count)
     out_table = (
         conn.execute("SELECT * EXCLUDE (row_id) REPLACE (ST_AsWKB(geometry) AS geometry) FROM area")
         .arrow()
@@ -127,11 +112,6 @@ def _enrich_tile(args: tuple[Path, dict[str, Any]]) -> str:
     elapsed = (time.perf_counter() - t0) / 60
     logger.info("%s: Done in %.2f min", area_name, elapsed)
     return f"Finished {area_name} ({out_table.num_rows} features, {elapsed:.1f} min)"
-
-
-# ---------------------------------------------------------------------------
-# Distribute phase helpers
-# ---------------------------------------------------------------------------
 
 
 def _build_national(conn: duckdb.DuckDBPyConnection, enrich_dir: Path) -> int:
@@ -205,11 +185,6 @@ def _export_state(state: str, fips: str, params: dict[str, Any]) -> str:
     return f"Finished {state} ({state_table.num_rows} features)"
 
 
-# ---------------------------------------------------------------------------
-# Main entry point
-# ---------------------------------------------------------------------------
-
-
 def run_postprocess(
     cfg: dict[str, Any],
     start_year: int,
@@ -217,18 +192,7 @@ def run_postprocess(
     polygonize_dir: str | Path,
     output_dir: str | Path,
 ) -> Path:
-    """Run the POSTPROCESS stage: enrich tiles then distribute nationally.
-
-    Args:
-        cfg: Loaded config dict.
-        start_year: First CDL year.
-        end_year: Last CDL year (inclusive).
-        polygonize_dir: Directory containing POLYGONIZE stage output parquets.
-        output_dir: Root output directory (enrich/, national/, state/ created inside).
-
-    Returns:
-        Path to the output directory.
-    """
+    """Enrich polygonize-stage tiles and split into national + per-state outputs."""
     console = Console()
     polygonize_dir = Path(polygonize_dir)
     output_dir = Path(output_dir)
@@ -238,7 +202,6 @@ def run_postprocess(
     for sub in ("national", "state"):
         (output_dir / sub).mkdir(parents=True, exist_ok=True)
 
-    # --- Enrich phase ---
     parquet_files = sorted(polygonize_dir.glob("*.parquet"))
     console.print(f"POSTPROCESS: {len(parquet_files)} tiles from POLYGONIZE")
 
@@ -263,15 +226,13 @@ def run_postprocess(
     else:
         console.print("[green]All tiles already enriched.")
 
-    # --- Distribute phase ---
     csb_tag = f"{str(start_year)[2:]}{str(end_year)[2:]}"
     t0 = time.perf_counter()
 
-    # Empty-input guard: ocean/forest tiles legitimately produce zero polygons.
-    # The pipeline shouldn't crash; emit empty national output and exit clean.
+    # Empty-input guard: ocean / pure-forest tiles legitimately produce zero polygons.
     enriched = sorted(enrich_dir.glob("*.parquet"))
     if not enriched:
-        console.print("[yellow]No enriched tiles — emitting empty national parquet.")
+        console.print("[yellow]No enriched tiles — nothing to merge.")
         return output_dir
 
     console.print("Merging tiles into national dataset...")

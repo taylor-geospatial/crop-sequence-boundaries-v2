@@ -1,82 +1,64 @@
 # AGENTS.md
 
-## Project Overview
+Notes for coding agents working in this repo.
 
-**CSB** (Crop Sequence Boundaries) is a cloud-native geospatial pipeline that transforms USDA Cropland Data Layer (CDL) rasters into structured crop sequence boundary datasets at national, state, and county/ASD levels.
+## What this is
 
-**Stack:** Python 3.12+, uv, contourrs (Rust polygonize), DuckDB spatial, exactextract, GeoParquet.
+`csb` is an open-source pipeline that turns USDA Cropland Data Layer rasters
+into Crop Sequence Boundary polygons. Drop-in replacement for the
+[USDA-REE-NASS arcpy pipeline](https://github.com/USDA-REE-NASS/crop-sequence-boundaries),
+USDA-identical output schema, no ArcGIS license. See [`README.md`](README.md)
+for the user-facing overview and [`PRICING.md`](PRICING.md) for cost.
 
-## Architecture
+## CLI shape
 
-```text
-CLI (cli.py)
-├── download        → Download USDA CDL rasters
-├── build-boundaries→ Build ASD+county boundary GeoParquet
-├── create          → Windowed-read CDL → polygonize → eliminate → simplify (DuckDB)
-├── prep            → Spatial join + zonal CDL stats per area
-├── distribute      → Merge national → split by state → GeoParquet
-└── run-all         → Execute full pipeline: create → prep → distribute
+```
+csb download         # NASS CDL rasters (parallel)
+csb build-boundaries # TIGER + NASS county/ASD GeoParquet
+csb polygonize       # CDL → connected components → eliminate → simplify
+csb postprocess      # spatial-join + state split → GeoParquet
+csb run-all          # polygonize + postprocess
+csb parity-prep      # Hilbert-sort + bbox cols for fast parity queries
+csb parity           # 16-region IoU vs USDA ground truth
+csb pmtiles          # GeoParquet → FlatGeobuf → tippecanoe → .pmtiles
 ```
 
-### Pipeline Data Flow
+## Module map
 
-```text
-CDL Rasters ──→ create ──→ prep ──→ distribute ──→ National GeoParquet
-                             ↑                  ──→ State GeoParquet
-                ASD/County ──┘
-```
+| Module                | Role                                                                             |
+| --------------------- | -------------------------------------------------------------------------------- |
+| `cli.py`              | Click command group                                                              |
+| `polygonize.py`       | Two-phase tiled raster → polygon driver (streaming pool)                         |
+| `postprocess.py`      | Boundary join, CSBID/CSBACRES/INSIDE_X,Y, state split                            |
+| `raster_eliminate.py` | Label-raster connected components + neighbor adjacency + union-find merge passes |
+| `download.py`         | Parallel CDL fetch from NASS                                                     |
+| `boundaries.py`       | TIGER + NASS county/ASD crosswalk                                                |
+| `parity.py`           | USDA ground-truth IoU validation                                                 |
+| `pmtiles.py`          | GeoParquet → FlatGeobuf → tippecanoe                                             |
+| `io.py`               | GeoParquet 1.1 writer (full PROJJSON CRS)                                        |
+| `config.py`           | YAML config + constants (`STATE_FIPS`, `BARREN_CODE`, …)                         |
+| `utils.py`            | `polygonize` wrapper, `parallel_map`/`parallel_starmap`                          |
 
-### Module Map
+## Conventions
 
-| Module          | Role                                                                                        |
-| --------------- | ------------------------------------------------------------------------------------------- |
-| `cli.py`        | Click CLI; 7 commands                                                                       |
-| `create.py`     | Windowed-read national CDL; polygonize; eliminate; simplify + filter in DuckDB              |
-| `prep.py`       | Spatial join with boundaries; bulk zonal CDL stats via exactextract                         |
-| `distribute.py` | Merge to national; split by state; export GeoParquet                                        |
-| `download.py`   | Download USDA CDL rasters (30m/10m)                                                         |
-| `boundaries.py` | Build ASD+county boundary file from TIGER/NASS                                              |
-| `utils.py`      | Vector ops (polygonize, eliminate), zonal stats (exactextract), parallelism helpers         |
-| `io.py`         | GeoParquet write                                                                            |
-| `config.py`     | YAML config loader; STATE_FIPS mapping; constants (BARREN_CODE, DEFAULT_CRS, ACRES_PER_SQM) |
+- CRS is fixed to `EPSG:5070` (NAD83 / Conus Albers) throughout.
+- Outputs are GeoParquet 1.1 with full-PROJJSON CRS metadata; the short
+    `{id: {authority, code}}` form is rejected by pyproj 3.x and breaks
+    geopandas / pyogrio / GDAL readers.
+- Parallel stages use `ProcessPoolExecutor` with `cpu_fraction` from config.
+- Each stage is resumable — completed area tiles are skipped automatically.
+- Tests live in `tests/`; pytest with xdist available.
+- Lint/format: ruff (line-length 100); type-check: ty; pre-commit covers both
+    plus mdformat and pyproject-fmt.
+- Commits follow Conventional Commits (`feat|fix|refactor|chore|docs|...`).
+- The bundled default config lives at `src/csb/_data/default.yaml` and is
+    resolved via `importlib.resources` so it travels with the wheel.
 
-## Key Conventions
-
-- **Config:** YAML-based (`configs/default.yaml`), override via `--config` flag.
-- **CRS:** EPSG:5070 (Albers Equal Area Conic) throughout; hardcoded as `DEFAULT_CRS` constant.
-- **Format:** GeoParquet throughout.
-- **Parallelism:** ProcessPoolExecutor using 90% of CPUs. Each stage processes independent area tiles.
-- **Resumable:** Each stage skips already-completed areas by checking output directory.
-- **Vectorized ops:** Simplify, min-area filter, and derived field computation done in DuckDB SQL. Zonal stats bulk-updated via Arrow temp tables.
-
-## Build & Test
+## Build & test
 
 ```bash
-make install    # uv sync --all-extras
-make check      # pre-commit run --all-files (ruff, ty, pyproject-fmt, mdformat)
-make test       # pytest --cov=src tests/
-make build      # uv build
-make clean      # remove build artifacts
+make install   # uv sync --all-extras + console script
+make check     # pre-commit
+make test      # pytest --cov
+make build     # uv build (sdist + wheel)
 ```
-
-## Coding Guidelines
-
-- Python 3.12+ features are fine (type unions `X | Y`, etc.).
-- Lint/format: ruff (line-length 100). Type check: ty.
-- Keep files under ~500 LOC; split if larger.
-- Tests in `tests/`; use pytest with xdist.
-- Commits: Conventional Commits (`feat|fix|refactor|...`).
-- Pre-commit hooks: ruff lint+format, ty check, pyproject-fmt, mdformat, uv lock.
-
-## Dependencies
-
-| Package      | Purpose                                |
-| ------------ | -------------------------------------- |
-| contourrs    | Rust raster→polygon (zero-copy Arrow)  |
-| duckdb       | SQL spatial joins, filtering, simplify |
-| exactextract | C++ zonal statistics                   |
-| shapely      | Geometry operations (eliminate)        |
-| polars       | DataFrame operations                   |
-| rasterio     | GeoTIFF windowed reads                 |
-| click        | CLI framework                          |
-| rich         | Terminal progress bars                 |

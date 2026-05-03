@@ -133,7 +133,7 @@ def test_process_tile_no_valid_pixels(tmp_path: Path) -> None:
 
 
 def test_process_tile_all_barren(tmp_path: Path) -> None:
-    """Tile with all barren (45) pixels — effective count = 0 after subtraction."""
+    """Tile with all non-cropland pixels — effective count = 0 after barren remap."""
     cdl_dir = tmp_path / "cdl"
     output_dir = tmp_path / "output"
     output_dir.mkdir()
@@ -142,7 +142,9 @@ def test_process_tile_all_barren(tmp_path: Path) -> None:
     for year in (2020, 2021):
         year_dir = cdl_dir / str(year)
         year_dir.mkdir(parents=True)
-        data = np.full((10, 10), 45, dtype=np.int32)
+        # Class 152 (shrubland) is non-cropland and gets remapped to BARREN_CODE
+        # at combine time, giving every pixel effective_count = 0.
+        data = np.full((10, 10), 152, dtype=np.int32)
         path = year_dir / f"{year}_30m_cdls.tif"
         profile = {
             "driver": "GTiff",

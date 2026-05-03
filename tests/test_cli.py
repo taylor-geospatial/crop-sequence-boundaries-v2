@@ -32,4 +32,5 @@ def test_run_all_help() -> None:
     runner = CliRunner()
     result = runner.invoke(main, ["run-all", "--help"])
     assert result.exit_code == 0
-    assert "full pipeline" in result.output.lower()
+    assert "polygonize" in result.output.lower()
+    assert "postprocess" in result.output.lower()

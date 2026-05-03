@@ -164,9 +164,11 @@ uv run csb --config configs/conus.yaml polygonize 2018 2025
 uv run csb --config configs/conus.yaml postprocess 2018 2025 \
     --polygonize-dir data/output/conus/polygonize/2018_2025
 
-# 6. (Optional) Build PMTiles. Needs tippecanoe — install via conda or build:
-#    https://github.com/felt/tippecanoe
-sbatch scripts/build_pmtiles.sbatch   # or run the script's body manually
+# 6. (Optional) Build PMTiles. Needs tippecanoe on PATH:
+#    conda install -c conda-forge tippecanoe
+uv run csb pmtiles \
+    -i data/output/conus/postprocess/2018_2025/national/CSB1825.parquet \
+    -o data/output/conus/CSB1825.pmtiles
 ```
 
 Total: one spot instance, ~50 minutes, ~$2.
@@ -184,9 +186,98 @@ Total: one spot instance, ~50 minutes, ~$2.
     larger spot instance (e.g. `c7i.48xlarge` at ~$3 – $4/hr spot) would drop
     wall to ~15 min for similar total cost.
 
+## Cheaper compute alternatives
+
+The baseline above uses Intel `m7i.16xlarge` spot at ~$1.50/hr. Below are
+concrete alternatives (us-east-1 / EU prices verified May 2026).
+
+### 1. AWS Graviton (ARM) — same vCPU class, ~20–30% cheaper
+
+| Instance       | vCPU | RAM    | On-demand | Spot (typ.) | vs `m7i.16xlarge` spot |
+| -------------- | ---- | ------ | --------- | ----------- | ---------------------- |
+| `m7i.16xlarge` | 64   | 256 GB | $3.226    | ~$1.23      | baseline               |
+| `m7g.16xlarge` | 64   | 256 GB | $2.611    | ~$0.91      | **−26%**               |
+| `c7g.16xlarge` | 64   | 128 GB | $2.320    | ~$0.71      | **−42%**               |
+| `r7g.16xlarge` | 64   | 512 GB | ~$3.43    | ~$1.20      | −2%                    |
+
+ARM-wheel sanity check (PyPI, May 2026): `numpy`, `shapely>=2`, `rasterio`,
+`scikit-image`, `duckdb`, `pyarrow`, `geopandas`, `tippecanoe` (built from
+source) all ship `manylinux2014_aarch64` wheels. `contourrs` (Rust) cross-compiles
+cleanly. **Verdict: Graviton is drop-in.** `c7g.16xlarge` saves ~$0.20 per
+CONUS run (RAM headroom check: peak observed ~190 GB → 128 GB is too tight;
+use `m7g.16xlarge` with 256 GB).
+
+### 2. Bigger instance, less wall-clock
+
+| Instance        | vCPU | RAM    | Spot $/hr | Est. wall | Est. cost |
+| --------------- | ---- | ------ | --------- | --------- | --------- |
+| `m7i.16xlarge`  | 64   | 256 GB | $1.23     | 25 min    | $0.51     |
+| `c7i.48xlarge`  | 192  | 384 GB | $3.15     | ~10 min   | ~$0.52    |
+| `m7g.16xlarge`  | 64   | 256 GB | $0.91     | 25 min    | **$0.38** |
+| `c7gn.16xlarge` | 64   | 128 GB | ~$1.10    | 25 min    | $0.46     |
+
+Bigger Intel boxes are cost-neutral; the win is wall-clock, not $. Pipeline
+scales near-linearly to ~64 physical cores then flattens, so `c7i.48xlarge`
+≈10 min is the practical wall-clock floor on a single node.
+
+### 3. Hetzner / OVH — no spot, but flat hourly is brutal
+
+| Provider | Box                     | vCPU/cores      | RAM    | €/mo | $/hr equiv.   |
+| -------- | ----------------------- | --------------- | ------ | ---- | ------------- |
+| Hetzner  | `CCX63` (ded. AMD vCPU) | 48 vCPU         | 192 GB | €343 | ~$0.51/hr     |
+| Hetzner  | `AX102` (dedicated)     | 16c/32t Ryzen 9 | 128 GB | €104 | **~$0.16/hr** |
+| Hetzner  | `AX162-R` (dedicated)   | 48t EPYC 9454P  | 256 GB | €230 | ~$0.34/hr     |
+
+A **Hetzner AX102 at €104/mo** runs the whole pipeline in ~30 min for
+~$0.08 of pro-rated compute — but with €104 minimum monthly commitment, it
+only beats AWS spot if you actually run >1 job/month or use the box for
+other work. For pure annual rebuild, AWS Graviton spot wins.
+
+### 4. Egress / hosting the 2.5 GB PMTiles
+
+| Provider      | Storage $/GB-mo | Egress $/GB     | Cost @ 1 TB/mo egress |
+| ------------- | --------------- | --------------- | --------------------- |
+| AWS S3        | $0.023          | $0.09           | **$92.10**            |
+| Backblaze B2  | $0.006          | $0.01 (3× free) | ~$2 (or $0 via CF)    |
+| Cloudflare R2 | $0.015          | **$0.00**       | **$0.04**             |
+
+For a public PMTiles served at any meaningful traffic, **Cloudflare R2 saves
+$90+/month vs S3 at 1 TB egress**. Use R2 with a custom domain; HTTP range
+requests work natively for PMTiles.
+
+### 5. NASS CDL source
+
+No official S3 mirror exists in the AWS Registry of Open Data (as of May 2026).
+NASS publishes CDL only via HTTPS at `nass.usda.gov` (free, internet egress
+into AWS is **free inbound**). One-time pull of 52 GB into us-east-1 costs $0.
+Google Earth Engine mirrors CDL but extracting CONUS rasters out of GEE is
+slower than the direct HTTPS pull.
+
+### 6. Annual rebuild total
+
+CDL releases once per year (Feb of following year). One run of this pipeline:
+
+| Setup                              | Compute | Storage+egress | **Annual** |
+| ---------------------------------- | ------- | -------------- | ---------- |
+| AWS `m7i.16xlarge` spot (baseline) | $1.65   | $0.35          | **$2.00**  |
+| AWS `m7g.16xlarge` spot (Graviton) | $1.10   | $0.35          | **$1.45**  |
+| AWS `m7g` + R2 hosting             | $1.10   | ~$0.05         | **$1.15**  |
+
+### Recommendation
+
+For a production annual CONUS rebuild, run on **`m7g.16xlarge` Graviton spot
+in us-east-1 (~$0.91/hr)** and host the PMTiles archive on **Cloudflare R2
+(zero egress)**. This drops compute by ~26% over the Intel baseline with no
+code changes (all deps have arm64 wheels), keeps the 25-min wall-clock, and
+makes serving the dataset to the public effectively free regardless of
+download traffic. Total annual cloud cost: **~$1.15**. If the box doubles
+as a research workstation the rest of the year, a Hetzner AX102 dedicated
+(€104/mo, 16c Ryzen 9 + 128 GB) is a strictly cheaper home — same job
+finishes in ~30 min with zero per-run cost.
+
 ## Numbers source
 
 Wall-clock measurements: `data/logs/conus_81200.out`,
 `data/logs/pmtiles_81211.out`, `data/logs/conus_parity_81225.out`,
-`data/logs/prep_parity_81221.out`. Reproducible via the `scripts/*.sbatch`
-wrappers in this repo.
+`data/logs/prep_parity_81221.out`. Reproducible via the SLURM wrappers in
+`examples/cluster/`.

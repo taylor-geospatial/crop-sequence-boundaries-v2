@@ -1,36 +1,22 @@
-"""Stage 1: POLYGONIZE — Combine multi-year CDL rasters into crop sequence polygons.
+"""Polygonize stage: combine multi-year CDL rasters into crop sequence polygons.
 
-Open-source port of USDA CSB `CSB-create.py` (arcpy.gp.Combine_sa →
-RasterToPolygon → JoinField → CSBElimination → SimplifyPolygon).
+OSS port of USDA's ``CSB-create.py`` (Combine_sa → RasterToPolygon → JoinField
+→ CSBElimination → SimplifyPolygon). Two phases per tile:
 
-Per window tile, two phases:
-
-Phase 1 (memory-heavy, raster-side):
-1. Windowed-read multi-year CDL rasters from national files.
-2. Encode each pixel's N-year CDL sequence as a packed int64; assign compact
-   combo IDs.
-3. Connected-components label the masked combo raster (one label per
-   connected polygon region).
-4. Compute polygon areas analytically (pixel count x pixel_area).
-5. Run multi-pass elimination on the LABEL RASTER: count adjacent-pixel-edge
-   pairs as shared boundary length, merge small labels into the non-small
-   neighbor with the longest shared boundary, union-find resolve transitive
-   merges, remap labels.
-6. Drop labels below `min_polygon_area` (so we don't simplify slivers that get
-   discarded anyway).
-7. Polygonize ONCE -> intermediate GeoParquet of pre-simplify polygons.
-
-Phase 2 (CPU-bound, polygon-side):
-8. shapely.coverage_simplify (preserves shared boundaries between neighbors —
-   the OSS analogue of arcpy `cartography.SimplifyPolygon(BEND_SIMPLIFY)`).
-9. min_area filter, write final GeoParquet.
-
-No SedonaDB cross-join, no per-pair ST_Intersection(ST_Boundary, ST_Boundary).
+* Phase 1 (raster-side): combine N years into compact combo IDs, label
+  connected components, run threshold-based elimination on the label raster
+  (union-find merge into longest-shared-boundary neighbor), drop labels below
+  the min-area floor, polygonize once.
+* Phase 2 (polygon-side): :func:`shapely.coverage_simplify` (the
+  topology-preserving analogue of arcpy ``BEND_SIMPLIFY``), final min-area
+  filter, write GeoParquet.
 """
 
 import gc
 import logging
+import shutil
 import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +27,7 @@ import rasterio
 import rasterio.windows
 import shapely
 from rasterio.windows import Window
+from rich.console import Console
 
 from csb.config import BARREN_CODE, CDL_CROP_MAX
 from csb.io import write_geoparquet
@@ -50,7 +37,7 @@ from csb.raster_eliminate import (
     label_areas,
     label_raster,
 )
-from csb.utils import polygonize
+from csb.utils import polygonize, worker_count
 
 logger = logging.getLogger(__name__)
 
@@ -89,12 +76,7 @@ def _combine_years_windowed(
             (combo, year) — non-cropland already remapped to BARREN_CODE.
         transform: rasterio Affine for this window.
     """
-    # Pack each year's CDL byte (0-254) into a separate byte slot of a uint64.
-    # 8 years * 1 byte = 64 bits, fits exactly. Replaces a base-300 int64
-    # multiply-add encoding that overflowed: 254 * 300**7 = 5.55e19 exceeds
-    # int64 max (9.22e18), corrupting unique_seqs decoding for any pixel
-    # whose year-7 CDL value > 42. Bit-packing is also faster (single
-    # bitwise_or vs. multiply-add).
+    # Pack each year's CDL byte (0..254) into one slot of a uint64 (8 yr * 8 b = 64 b).
     if len(years) > 8:
         msg = f"bit-packed combine supports up to 8 years (got {len(years)})"
         raise ValueError(msg)
@@ -168,7 +150,7 @@ def _phase1_polygonize(args: tuple[str, dict[str, Any]]) -> str:
         national_cdl, years, window
     )
 
-    # USDA-strict keep filter: effective_count >= min_cropland_years.
+    # Keep filter: effective_count (cropland years - barren years) >= min_cropland_years.
     effective_map = effective_per_combo[combo_raster]
     mask = effective_map >= min_cropland
     if not mask.any():
@@ -184,8 +166,8 @@ def _phase1_polygonize(args: tuple[str, dict[str, Any]]) -> str:
     if n_lbl == 0:
         return f"Skipped {area} (all eliminated)"
 
-    # Recompute combo_per_label against the post-eliminate label space
-    # (eliminate compacts label IDs so the pre-eliminate map is stale).
+    # Per-label combo + effective_count via first-pixel sample (post-eliminate
+    # labels are dominated by their seed combo since slivers were < min_area).
     flat_lbl = lbl.ravel()
     flat_combo = combo_raster.ravel()
     order = np.argsort(flat_lbl, kind="stable")
@@ -199,22 +181,16 @@ def _phase1_polygonize(args: tuple[str, dict[str, Any]]) -> str:
     eff_per_label[first_lbl] = effective_per_combo[flat_combo[first_idx]]
     del order, sorted_lbl, first_idx, first_lbl, flat_combo, flat_lbl
 
-    # Same-combo dissolve: merge adjacent labels sharing the same combo. After
-    # elimination, slivers absorbed into a large polygon often leave that
-    # polygon touching another large polygon with identical CDL sequence; this
-    # collapses them into one. Major contributor to USDA polygon-count parity.
+    # Dissolve adjacent labels sharing the same combo (sliver absorption can
+    # leave two former-adjacent regions touching with identical CDL sequence).
     pre_n = n_lbl
     lbl, n_lbl, combo_per_label = dissolve_same_combo(lbl, n_lbl, combo_per_label)
     if n_lbl < pre_n:
         logger.info("%s: same-combo dissolve %s → %s labels", area, pre_n, n_lbl)
-        # eff_per_label needs to follow; cheap to rebuild from combo_per_label.
         eff_per_label = effective_per_combo[combo_per_label].astype(np.int16, copy=False)
     gc.collect()
 
-    # Drop labels below min_area BEFORE polygonizing — saves ~2-3x simplify
-    # work later. Pixels in dropped labels become background; they were already
-    # carried through eliminate so they'll have been merged into a neighbor if
-    # one was eligible.
+    # Drop labels below min_area before polygonizing.
     areas_per_label = label_areas(lbl, n_lbl)
     keep_lbl = areas_per_label >= min_area_keep
     keep_lbl[0] = False
@@ -247,16 +223,10 @@ def _phase1_polygonize(args: tuple[str, dict[str, Any]]) -> str:
         "geometry": table["geometry"],
         "effective_count": pa.array(eff_arr, type=pa.int32()),
     }
-    # Pre-compute CDL{year} per polygon. Replace BARREN sentinel with 0 (USDA
-    # convention: no-cropland encodes back to original CDL class would be
-    # nice but lossy; BARREN→0 keeps schema int16+ compatible and signals
-    # "non-cropland year" for downstream filters).
+    # CDL{year} per polygon: emit 0 for non-cropland years (the original
+    # CDL class was overwritten with BARREN at combine time).
     for i, year in enumerate(years):
         cdl_arr = cdl_per_combo_year[combo_arr, i].astype(np.int32)
-        # BARREN_CODE marks non-cropland; downstream USDA-style schema uses
-        # the original CDL classes here (they represent forest/water/etc).
-        # Since we overwrote those at combine-time, emit 0 as "non-cropland"
-        # — preserves type but the original CDL class is no longer available.
         cdl_arr = np.where(cdl_arr == BARREN_CODE, 0, cdl_arr)
         out_cols[f"CDL{year}"] = pa.array(cdl_arr, type=pa.int32())
 
@@ -264,7 +234,7 @@ def _phase1_polygonize(args: tuple[str, dict[str, Any]]) -> str:
 
     out_path = intermediate_dir / f"{area}.parquet"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    # Write plain parquet (geoparquet metadata added in phase 2).
+    # Plain parquet here; GeoParquet metadata is attached in phase 2.
     pq.write_table(out_table, out_path, compression="zstd")
 
     elapsed = time.perf_counter() - t0
@@ -272,13 +242,8 @@ def _phase1_polygonize(args: tuple[str, dict[str, Any]]) -> str:
     return f"Phase1 {area} ({out_table.num_rows} polygons, {elapsed:.0f}s)"
 
 
-# ---------------------------------------------------------------------------
-# Phase 2: coverage_simplify + min_area filter (CPU-bound)
-# ---------------------------------------------------------------------------
-
-
 def _phase2_simplify(args: tuple[str, dict[str, Any]]) -> str:
-    """Phase 2: coverage_simplify pre-simplify polygons -> final GeoParquet."""
+    """Phase 2: coverage_simplify + min-area filter, write final GeoParquet."""
     area, params = args
     cfg = params["config"]
     intermediate_dir = Path(params["intermediate_dir"])
@@ -295,7 +260,6 @@ def _phase2_simplify(args: tuple[str, dict[str, Any]]) -> str:
     if table.num_rows == 0:
         return f"Skipped {area} (empty intermediate)"
 
-    # shapely 2.x bulk from_wkb takes numpy arrays directly (no .tolist() copy).
     geoms = shapely.from_wkb(np.asarray(table["geometry"]))
 
     logger.info("%s: coverage_simplify %s polygons (tol=%sm)", area, len(geoms), simplify_tol)
@@ -306,7 +270,6 @@ def _phase2_simplify(args: tuple[str, dict[str, Any]]) -> str:
     if not keep.any():
         return f"Skipped {area} (all below min_area after simplify)"
 
-    # Boolean indexing on numpy object array — no Python list comp.
     kept_geoms = geoms_simp[keep]
     kept_areas = areas[keep]
     keep_arrow = pa.array(keep)
@@ -330,11 +293,6 @@ def _phase2_simplify(args: tuple[str, dict[str, Any]]) -> str:
     return f"Finished {area} ({out_table.num_rows} polygons, {elapsed:.0f}s)"
 
 
-# ---------------------------------------------------------------------------
-# Single-tile entry point (for tests / --area debugging)
-# ---------------------------------------------------------------------------
-
-
 def process_tile(args: tuple[str, dict[str, Any]]) -> str:
     """Run both phases on a single tile, no intermediate parquet on disk."""
     area, params = args
@@ -348,11 +306,6 @@ def process_tile(args: tuple[str, dict[str, Any]]) -> str:
     return _phase2_simplify((area, p2_params))
 
 
-# ---------------------------------------------------------------------------
-# Driver
-# ---------------------------------------------------------------------------
-
-
 def run_polygonize(
     cfg: dict[str, Any],
     start_year: int,
@@ -360,21 +313,11 @@ def run_polygonize(
     output_dir: str | Path,
     area: str | None = None,
 ) -> Path:
-    """Run POLYGONIZE for all (or one) window tile(s).
+    """Run polygonize for all (or one) window tile(s).
 
-    Two-phase: Phase 1 (raster-side, memory-heavy, fewer workers) writes
-    intermediate parquets; Phase 2 (polygon-side, CPU-bound, more workers)
-    simplifies into final GeoParquet. Both phases stream concurrently — Phase
-    2 starts on tiles as soon as Phase 1 finishes them, removing the global
-    barrier the legacy two-stage driver had.
+    Two phase pools share a streaming queue: phase 2 starts on each tile as
+    soon as phase 1 emits its intermediate, so the two stages overlap.
     """
-    import shutil
-    from concurrent.futures import ProcessPoolExecutor, as_completed
-
-    from rich.console import Console
-
-    from csb.utils import worker_count
-
     console = Console()
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -451,23 +394,17 @@ def run_polygonize(
     p2_skipped = 0
     p1_skipped = 0
 
-    # Streaming pipeline: P2 worker pool eats tiles as P1 finishes them.
     with (
         ProcessPoolExecutor(max_workers=phase1_workers) as p1_pool,
         ProcessPoolExecutor(max_workers=phase2_workers) as p2_pool,
     ):
-        # Submit P2 tasks for tiles that already have intermediates from prior runs.
-        p2_futures: dict = {}
-        for name, _w in phase2_pending:
-            p2_futures[p2_pool.submit(_phase2_simplify, (name, p2_params))] = name
-
-        # Submit all P1 tasks.
+        p2_futures: dict = {
+            p2_pool.submit(_phase2_simplify, (name, p2_params)): name for name, _w in phase2_pending
+        }
         p1_futures: dict = {
             p1_pool.submit(_phase1_polygonize, _p1_args(name, w)): name
             for name, w in phase1_remaining
         }
-
-        # As P1 finishes each tile, submit it to P2 immediately.
         for fut in as_completed(p1_futures):
             name = p1_futures[fut]
             try:
@@ -481,8 +418,6 @@ def run_polygonize(
             else:
                 p1_skipped += 1
                 console.print(f"  {msg}")
-
-        # Drain P2.
         for fut in as_completed(p2_futures):
             name = p2_futures[fut]
             try:

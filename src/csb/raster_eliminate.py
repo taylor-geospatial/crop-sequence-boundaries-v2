@@ -1,24 +1,14 @@
-"""Raster-side elimination — replaces SedonaDB cross-join in src/csb/utils.py.
+"""Raster-side polygon elimination, equivalent to arcpy `Eliminate(LENGTH)`.
 
-Mirrors arcpy.management.Eliminate(selection="LENGTH") but operates on the
-label raster instead of polygons:
-
-1. Connected-components label the masked combo raster -> each polygon gets a
-   unique label id.
-2. Compute polygon areas analytically from pixel counts.
-3. Compute neighbor adjacency by counting axis-aligned pixel-edge crossings
-   between adjacent labels (single numpy pass, O(W*H)).
-4. For each area threshold, build a small->largest-shared-boundary-neighbor
-   mapping, resolve transitive merges via union-find, remap the label raster.
-5. Polygonize once at the end (the caller does this).
-
-No ST_Intersection, no ST_Boundary, no spatial cross-join.
+Operates on the label raster: count adjacent-pixel-edge crossings between
+labels for shared-boundary length, merge labels with area below threshold
+into the longest-shared-boundary neighbor via union-find, remap the raster.
 """
 
 import numpy as np
 from skimage.measure import label as cc_label
 
-from csb.config import BARREN_CODE, CDL_CROP_MAX, CDL_PIXEL_AREA_SQM
+from csb.config import CDL_PIXEL_AREA_SQM
 
 
 def label_raster(combo_raster: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, int]:
@@ -37,16 +27,6 @@ def label_raster(combo_raster: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray
     masked = np.where(mask, combo_raster.astype(np.int32) + 1, 0).astype(np.int32)
     lbl = cc_label(masked, connectivity=1, background=0).astype(np.int32)
     return lbl, int(lbl.max())
-
-
-def label_to_combo_map(lbl: np.ndarray, combo_raster: np.ndarray, n_labels: int) -> np.ndarray:
-    """For each label id, return the underlying combo_id."""
-    flat_lbl = lbl.ravel()
-    flat_combo = combo_raster.ravel()
-    out = np.zeros(n_labels + 1, dtype=np.int32)
-    keep = flat_lbl > 0
-    out[flat_lbl[keep]] = flat_combo[keep]
-    return out
 
 
 def label_areas(
@@ -283,25 +263,3 @@ def dissolve_same_combo(
         if new_id > 0:
             new_combo[new_id] = combo_per_label[old_root]
     return new_lbl, new_n, new_combo
-
-
-# ---------------------------------------------------------------------------
-# Effective-count helper (replaces the DuckDB filter step)
-# ---------------------------------------------------------------------------
-
-
-def effective_count_per_combo(unique_seqs: np.ndarray, n_years: int, base: int = 300) -> np.ndarray:
-    """Compute COUNT0 - COUNT45 per combo from packed sequence ids."""
-    n = len(unique_seqs)
-    count0 = np.zeros(n, dtype=np.int16)
-    count45 = np.zeros(n, dtype=np.int16)
-    for i in range(n_years):
-        yr = (unique_seqs // np.int64(base) ** i) % np.int64(base)
-        count0 += (yr > 0).astype(np.int16)
-        count45 += (yr == BARREN_CODE).astype(np.int16)
-    return (count0 - count45).astype(np.int16)
-
-
-def normalize_cdl_classes(arr: np.ndarray) -> np.ndarray:
-    """Same remap as the legacy combine: non-cropland (>CDL_CROP_MAX) -> BARREN."""
-    return np.where((arr > CDL_CROP_MAX) & (arr != 0), BARREN_CODE, arr)

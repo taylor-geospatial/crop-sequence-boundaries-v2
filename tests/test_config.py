@@ -41,6 +41,9 @@ def test_state_fips() -> None:
 def test_constants() -> None:
     import pytest
 
-    assert BARREN_CODE == 45
+    # Sentinel must lie outside the cropland range [1, 81] to avoid
+    # collisions with real CDL crop classes (e.g. CDL 45 = sugarcane).
+    assert BARREN_CODE > 81
+    assert BARREN_CODE <= 254
     assert DEFAULT_CRS == "EPSG:5070"
     assert pytest.approx(1.0 / 4046.86) == ACRES_PER_SQM

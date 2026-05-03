@@ -1,164 +1,197 @@
-# CSB — Crop Sequence Boundaries
+# csb — Crop Sequence Boundaries
 
-Cloud-native geospatial pipeline for generating USDA Crop Sequence Boundaries from Cropland Data Layer (CDL) rasters.
+Open-source pipeline that turns USDA Cropland Data Layer rasters into
+field-level crop sequence boundary polygons. A drop-in replacement for the
+official ArcPy CSB pipeline at
+[USDA-REE-NASS/crop-sequence-boundaries](https://github.com/USDA-REE-NASS/crop-sequence-boundaries):
 
-CSB converts yearly national CDL rasters into tiled crop-sequence polygons, enriches them with county and ASD context plus zonal CDL attributes, then publishes national and state GeoParquet outputs.
+- **No ArcGIS license required.** Pure-Python + a few Rust/C extensions.
+- **~25 minutes** for the full 8-year CONUS rebuild on a single 32-core node
+    (USDA's published runtime: 5 days on a 96-core AWS workstation —
+    [Hunt et al. 2024](https://journals.sagepub.com/doi/full/10.3233/SJI-230078)).
+- **~$2 of AWS spot compute** per CONUS run. See [PRICING.md](PRICING.md).
+- **USDA-identical output schema** (`CSBID`, `CSBYEARS`, `CSBACRES`,
+    `CDL{year}`, `STATEFIPS`, `STATEASD`, `ASD`, `CNTY`, `CNTYFIPS`,
+    `INSIDE_X/Y`, `Shape_Length`, `Shape_area`).
+- **Mean IoU 0.843, median 0.895** vs USDA ground truth across 16
+    geospatially diverse test tiles; acreage match within 2% in median.
 
-## Architecture
+## Install
 
-[View interactive diagram on Excalidraw](https://excalidraw.com/#json=a_prbpp_P7ZiXLGUepdqU,n96ghtNeEzddZlpic4vu2g)
-
-```text
-                          INPUT
-  ┌──────────┐                         ┌────────────┐
-  │ download │────────────────────▸    │ CDL Rasters│
-  └──────────┘                         └─────┬──────┘
-  ┌──────────────────┐                       │
-  │ build-boundaries │──────▸ ┌──────────┐   │
-  └──────────────────┘        │ ASD/CNTY │   │
-                              └────┬─────┘   │
-                          PIPELINE │         │
-            ┌────────┐     ┌──────┴┐   ┌────┴──────┐
-            │ create │────▸│ prep  │──▸│distribute │
-            └────────┘     └───────┘   └─────┬─────┘
-            Polygonize      Join +       Merge +
-            + eliminate     zonal stats  split by state
-                                              │
-                          OUTPUT              │
-  ┌───────────────────┐  ┌────────────────┐
-  │National GeoParquet│  │State GeoParquet│
-  └───────────────────┘  └────────────────┘
+```bash
+pip install csb
 ```
+
+For development:
+
+```bash
+git clone https://github.com/isaaccorley/crop-sequence-boundaries-v2
+cd crop-sequence-boundaries-v2
+uv sync --all-extras
+```
+
+The `csb` console script is installed automatically.
+
+## Quickstart
+
+```bash
+# 1. Pull the inputs (parallel; ~5 min from NASS over a fast pipe).
+csb download 2018 2025 --workers 8
+
+# 2. Build the county/ASD boundary file (one-time, ~30s).
+csb build-boundaries
+
+# 3. Run the full pipeline.
+csb run-all 2018 2025
+```
+
+Output: a national GeoParquet plus 48 per-state GeoParquets at
+`data/output/postprocess/2018_2025/`.
 
 ## Pipeline
 
 ```text
-download         Download USDA national CDL rasters (30 m, and 10 m for 2024+)
-build-boundaries Build CONUS county + ASD boundary GeoParquet
-create           Windowed-read CDL -> combine yearly sequences -> polygonize -> eliminate -> simplify
-prep             Spatial join boundaries -> zonal majority CDL per year
-distribute       Merge area outputs -> derive IDs/metrics -> write national + state GeoParquet
-run-all          Execute create -> prep -> distribute
+┌──────────┐   ┌──────────────────┐   ┌─────────────┐   ┌─────────────┐
+│ download │──▸│ build-boundaries │──▸│  polygonize │──▸│ postprocess │
+└──────────┘   └──────────────────┘   └─────────────┘   └─────────────┘
+   CDL TIFs        ASD/county GeoParquet      raster→polygon         per-state
+                                              eliminate +            GeoParquets
+                                              simplify
 ```
 
-Key implementation details:
+| Stage              | What it does                                                                                                                      |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `download`         | Fetch USDA national CDL rasters in parallel from NASS.                                                                            |
+| `build-boundaries` | Build the CONUS county+ASD boundary GeoParquet from Census TIGER + NASS crosswalk.                                                |
+| `polygonize`       | Combine multi-year CDL → label connected components → multi-pass label-raster elimination → coverage simplify → tiled GeoParquet. |
+| `postprocess`      | Spatial-join to county/ASD (largest overlap), derive `CSBID`/`CSBACRES`/`INSIDE_X,Y`, write national + per-state GeoParquets.     |
+| `run-all`          | `polygonize` then `postprocess` back-to-back.                                                                                     |
 
-- CRS is fixed to `EPSG:5070` throughout.
-- Outputs are GeoParquet at every stage.
-- Parallel stages use `ProcessPoolExecutor` with a configurable CPU fraction.
-- Stages are resumable: completed area tiles are skipped automatically.
+Two extra commands handle validation and serving:
 
-## Install
-
-For development or local runs, install from source:
-
-```bash
-make install
-```
-
-That runs `uv sync --all-extras` and installs the CLI entrypoint as `csb`.
-
-If you only want a local package install without the dev toolchain:
-
-```bash
-pip install .
-```
+| Stage         | What it does                                                                              |
+| ------------- | ----------------------------------------------------------------------------------------- |
+| `parity-prep` | Hilbert-sort + add bbox columns to ours and USDA parquets so DuckDB can prune row groups. |
+| `parity`      | 16-region IoU/acreage validation vs USDA ground truth.                                    |
+| `pmtiles`     | Build a CONUS PMTiles archive from the national parquet (requires `tippecanoe` on PATH).  |
 
 ## Configuration
 
-CSB uses YAML configuration. The bundled default is [configs/default.yaml](/home/isaaccorley/github/crop-sequence-boundaries-v2/configs/default.yaml).
+CSB ships with a default YAML config; override paths or thresholds via:
 
-Default paths:
+```bash
+csb --config configs/conus.yaml run-all 2018 2025
+```
 
 ```yaml
+# configs/conus.yaml
+global:
+  cpu_fraction: 0.95
+  min_cropland_years: 2
+
 paths:
-  output: /data/csb/output
-  national_cdl: /data/csb/input/national_cdl
-  boundaries: /data/csb/input/boundaries/US48_ASD_CNTY_Albers.parquet
+  output: data/output/conus
+  national_cdl: data/input/national_cdl
+  boundaries: data/input/boundaries/US48_ASD_CNTY_Albers.parquet
+
+polygonize:
+  phase1_workers: 16
+  phase2_workers: 16
+  tile_size: 5000
+  eliminate_thresholds: [100, 1000, 10000, 10000]   # matches USDA CSBElimination
+  min_polygon_area: 10000
+  simplify_tolerance: 60
 ```
 
-Run any command with a custom config:
+## Output schema
+
+Identical to USDA CSB:
+
+| Column                       | Type         | Description                                            |
+| ---------------------------- | ------------ | ------------------------------------------------------ |
+| `CSBID`                      | text(15)     | `STATEFIPS + CSBYEARS + zfill(OBJECTID, 9)`            |
+| `CSBYEARS`                   | text(4)      | e.g. `1825` for 2018–2025                              |
+| `CSBACRES`                   | float64      | polygon area in acres                                  |
+| `CDL2018`..`CDL2025`         | int32        | dominant CDL class per year (0 for non-cropland years) |
+| `STATEFIPS`                  | text(2)      | state FIPS code                                        |
+| `STATEASD`                   | text(10)     | state + agricultural statistics district               |
+| `ASD`                        | text(2)      | ASD within state                                       |
+| `CNTY`                       | text         | county name                                            |
+| `CNTYFIPS`                   | text(3)      | county FIPS code                                       |
+| `INSIDE_X`, `INSIDE_Y`       | float64      | EPSG:5070 coordinates of a guaranteed-interior point   |
+| `Shape_area`, `Shape_Length` | float64      | EPSG:5070 area / perimeter                             |
+| `geometry`                   | binary (WKB) | polygon, EPSG:5070                                     |
+
+## Parity vs USDA ground truth
+
+Across 16 geospatially diverse 5000² test tiles (Iowa corn belt, Texas
+panhandle, Mississippi delta, Imperial Valley, Palouse, Snake River,
+Wisconsin dairy belt, Delmarva, …):
+
+| metric                    | mean  | median | min   | max   |
+| ------------------------- | ----- | ------ | ----- | ----- |
+| IoU                       | 0.843 | 0.895  | 0.527 | 0.934 |
+| polygon ratio (ours/USDA) | 1.02  | 0.91   | 0.47  | 1.57  |
+| acres ratio               | 0.95  | 0.98   | 0.68  | 1.01  |
+
+To reproduce:
 
 ```bash
-csb --config configs/local.yaml run-all 2020 2024
+csb parity-prep \
+    --ours data/output/conus/postprocess/2018_2025/national/CSB1825.parquet \
+    --ours-out data/output/conus/postprocess/2018_2025/national/CSB1825_indexed.parquet \
+    --usda-gdb data/CSB1825.gdb \
+    --usda-out data/CSB1825_indexed.parquet
+
+csb parity \
+    --ours data/output/conus/postprocess/2018_2025/national/CSB1825_indexed.parquet \
+    --usda data/CSB1825_indexed.parquet \
+    --report data/profile/parity.json
 ```
 
-## Usage
+## Cluster runs
 
-Build the two required inputs first:
+SLURM submission scripts for HPC sites are in
+[`examples/cluster/`](examples/cluster). Each defaults to a single fat node
+sized for the CONUS dataset; adjust `--account` and `--partition` for your
+site.
 
 ```bash
-csb download 2020 2024
-csb build-boundaries
+sbatch examples/cluster/conus_run.sbatch
+sbatch examples/cluster/build_pmtiles.sbatch
 ```
 
-Run the full pipeline:
+## Stack
 
-```bash
-csb run-all 2020 2024
-```
+| Component                                                                                                                                                | Used for                                                |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| [`rasterio`](https://github.com/rasterio/rasterio)                                                                                                       | Windowed CDL reads                                      |
+| [`scikit-image`](https://github.com/scikit-image/scikit-image)                                                                                           | Connected-components labelling                          |
+| [`contourrs`](https://github.com/cubao/contourrs)                                                                                                        | Rust-backed raster → polygon                            |
+| [`shapely`](https://github.com/shapely/shapely)                                                                                                          | `coverage_simplify` (analogue of arcpy `BEND_SIMPLIFY`) |
+| [`duckdb`](https://github.com/duckdb/duckdb) (+ spatial extension)                                                                                       | Spatial joins, reads, GeoParquet output                 |
+| [`pyarrow`](https://github.com/apache/arrow) / [`geopandas`](https://github.com/geopandas/geopandas) / [`pyogrio`](https://github.com/geopandas/pyogrio) | Columnar I/O                                            |
+| [`tippecanoe`](https://github.com/felt/tippecanoe)                                                                                                       | PMTiles build (optional)                                |
 
-Or run stages individually:
+CRS is fixed to `EPSG:5070` throughout. Outputs are GeoParquet 1.1 at every
+stage.
 
-```bash
-csb create 2020 2024 --output /data/csb/output/create/2020_2024
-csb prep 2020 2024 --create-dir /data/csb/output/create/2020_2024 --output /data/csb/output/prep/2020_2024
-csb distribute 2020 2024 --prep-dir /data/csb/output/prep/2020_2024 --output /data/csb/output/distribute/2020_2024
-```
+## Cost
 
-Useful options:
-
-- `csb download ... --resolution 10` for 10 m CDL where available (`2024`, `2025`).
-- `csb download ... --overwrite` to force a fresh download.
-- `csb create ... --area A0` to process a single tile during debugging.
-- `csb --config path/to/config.yaml ...` to override storage paths or thresholds.
-
-## Outputs
-
-For a run over `2020 2024`, the default output tree is:
-
-```text
-/data/csb/output/
-├── create/2020_2024/*.parquet
-├── prep/2020_2024/*.parquet
-└── distribute/2020_2024/
-    ├── national/CSB2024.parquet
-    └── state/CSB<STATE>2024.parquet
-```
-
-The DISTRIBUTE stage adds derived fields including:
-
-- `CSBID` — stable identifier built from state FIPS, year tag, and national row ID.
-- `CSBACRES` — polygon area in acres.
-- `INSIDE_X`, `INSIDE_Y` — point-on-surface coordinates in `EPSG:5070`.
-
-The PREP stage enriches each polygon with:
-
-- `STATEFIPS`, `STATEASD`, `ASD`, `CNTY`, `CNTYFIPS`
-- `CDL<year>` majority-value columns for each requested year
+A full annual CONUS rebuild costs **~$1.15 to $2.00 of AWS spot compute**
+(plus near-zero storage on Cloudflare R2). Detailed pricing breakdown,
+hardware comparisons, and a side-by-side vs USDA's ArcGIS pipeline are in
+[PRICING.md](PRICING.md).
 
 ## Development
 
 ```bash
-make install
-make check
-make test
-make build
+make install      # uv sync --all-extras + console script
+make check        # pre-commit: ruff, ruff-format, ty, mdformat, …
+make test         # pytest with coverage
+make build        # build sdist + wheel
 ```
 
-Targets:
+## License
 
-- `make install` — `uv sync --all-extras`
-- `make check` — `uv run pre-commit run --all-files`
-- `make test` — `uv run pytest --cov=src tests/`
-- `make build` — `uv build`
-
-## Stack
-
-- `contourrs` for Rust-backed raster polygonization
-- `duckdb` with spatial extension for filtering, joins, and derived geometry fields
-- `exactextract` for zonal statistics
-- `rasterio` for windowed GeoTIFF reads
-- `shapely` for polygon elimination workflows
-- `polars` and `pyarrow` for columnar data handling
-- `GeoParquet` as the storage format throughout
+Apache-2.0. See [LICENSE](LICENSE).

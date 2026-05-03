@@ -5,9 +5,11 @@ requires = [ "uv-build>=0.9.3,<1" ]
 [project]
 name = "csb"
 version = "0.1.0"
-description = "Cloud-native pipeline for generating USDA Crop Sequence Boundaries from Cropland Data Layer rasters."
+description = "Open-source pipeline for USDA Crop Sequence Boundaries from Cropland Data Layer rasters."
 readme = "README.md"
-license = { text = "Unlicense" }
+keywords = [ "agriculture", "cdl", "crop-sequence", "geoparquet", "gis", "pmtiles", "usda" ]
+license = "Apache-2.0"
+license-files = [ "LICENSE" ]
 authors = [
   { name = "Isaac Corley", email = "isaac.corley@proton.me" },
 ]
@@ -26,10 +28,11 @@ dependencies = [
   "click>=8,<9",
   "contourrs>=0,<1",
   "duckdb>=1,<2",
-  "exactextract>=0,<1",
+  "geopandas>=1,<2",
   "numpy>=2,<3",
-  "polars>=1,<2",
   "pyarrow>=23,<24",
+  "pyogrio>=0.10,<1",
+  "pyproj>=3.6,<4",
   "pyyaml>=6,<7",
   "rasterio>=1,<2",
   "rich>=14,<15",
@@ -37,12 +40,12 @@ dependencies = [
   "shapely>=2,<3",
 ]
 urls.Homepage = "https://github.com/isaaccorley/crop-sequence-boundaries-v2"
+urls.Issues = "https://github.com/isaaccorley/crop-sequence-boundaries-v2/issues"
 urls.Repository = "https://github.com/isaaccorley/crop-sequence-boundaries-v2"
 scripts.csb = "csb.cli:main"
 
 [dependency-groups]
 dev = [
-  "geopandas>=1,<2",
   "pre-commit>=4,<5",
   "pytest>=9,<10",
   "pytest-cov>=7,<8",

@@ -2,30 +2,24 @@
 
 from __future__ import annotations
 
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-# CDL classes 1-81 are crop/agriculture (annual crops, perennial crops, fallow/idle, misc ag).
-# Classes >= 82 are non-cropland (water=111, developed=121-124, forest=141-143,
-# grassland=176, wetlands=190, etc.).  These are remapped to BARREN_CODE before
-# computing crop-year counts so they don't inflate effective_count.
-CDL_CROP_MAX = 81  # inclusive: CDL in [1, CDL_CROP_MAX] treated as cropland
+# CDL crop classes are 1..CDL_CROP_MAX inclusive; >= 82 are non-cropland
+# (water, developed, forest, grassland, wetlands, etc.).
+CDL_CROP_MAX = 81
 
-# Sentinel value assigned to non-cropland pixels before packing sequences.
-# Must be distinct from all valid CDL crop classes (1-81). Old value of 45
-# collided with CDL 45 (sugarcane), causing real sugarcane fields in
-# Florida/Louisiana to be silently dropped from CSB output.
+# Sentinel for non-cropland pixels in the packed sequence. Must not collide
+# with any cropland class in [1, CDL_CROP_MAX].
 BARREN_CODE = 254
 
-# 30m CDL pixel area in sq metres (EPSG:5070 Albers Equal Area, so exact).
+# 30m CDL pixel area in m² (exact in EPSG:5070 Albers Equal Area).
 CDL_PIXEL_AREA_SQM = 900
 
-# Albers Equal Area Conic (USGS version) — default CRS
 DEFAULT_CRS = "EPSG:5070"
-
-# Conversion factor
 ACRES_PER_SQM = 1.0 / 4046.86
 
 # CONUS state abbreviation → FIPS code (excludes AK, HI, territories)
@@ -88,5 +82,5 @@ def load_config(path: str | Path) -> dict[str, Any]:
 
 
 def bundled_config_path() -> Path:
-    """Return path to the default config bundled with the package."""
-    return Path(__file__).parent.parent.parent / "configs" / "default.yaml"
+    """Path to the bundled default YAML config."""
+    return Path(str(resources.files("csb").joinpath("_data/default.yaml")))
