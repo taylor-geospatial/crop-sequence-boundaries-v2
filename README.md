@@ -183,6 +183,18 @@ A full annual CONUS rebuild costs **~$1.15 to $2.00 of AWS spot compute**
 hardware comparisons, and a side-by-side vs USDA's ArcGIS pipeline are in
 [PRICING.md](PRICING.md).
 
+## Data hosting
+
+Generated CSB datasets are published on **[Source Cooperative](https://source.coop)**
+under a public bucket. Source Coop offers fast HTTP range-request access
+(better than Zenodo for large geospatial archives) and a stable URL per
+release. Each archive corresponds to a `vX.Y.Z` GitHub Release on this
+repo — the GitHub release notes are the canonical changelog and the
+Source Cooperative bucket holds the GeoParquet + PMTiles artifacts.
+
+Cite the dataset via the [CITATION.cff](CITATION.cff) (software) and the
+technical report in [`paper/`](paper/) (methodology).
+
 ## Development
 
 ```bash

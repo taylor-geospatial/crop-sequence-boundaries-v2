@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    name: Build sdist + wheel
+    name: Build sdist + wheel + SBOM
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -25,11 +25,41 @@ jobs:
       - name: Build distributions
         run: uv build
 
+      # Software Bill of Materials — pinned dep tree for the runtime install.
+      # Two formats: a plain `requirements.txt` (uv export) plus a CycloneDX
+      # JSON for SBOM-aware tooling (Trivy, Grype, GitHub Advanced Security).
+      - name: Generate SBOM (requirements.txt)
+        run: |
+          uv export --format requirements-txt --no-dev --no-hashes \
+              --output-file dist/csb-${{ github.ref_name }}-requirements.txt
+
+      - name: Generate SBOM (CycloneDX)
+        run: |
+          uv tool run cyclonedx-py environment \
+              --output-file dist/csb-${{ github.ref_name }}-sbom.cdx.json \
+              --output-format JSON \
+              .venv 2>/dev/null || \
+          uv tool run cyclonedx-py requirements \
+              --output-file dist/csb-${{ github.ref_name }}-sbom.cdx.json \
+              --output-format JSON \
+              dist/csb-${{ github.ref_name }}-requirements.txt
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
           if-no-files-found: error
+
+      # Attach SBOMs to the GitHub Release alongside the wheel + sdist.
+      - name: Attach SBOMs to GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+              "dist/csb-${{ github.ref_name }}-requirements.txt" \
+              "dist/csb-${{ github.ref_name }}-sbom.cdx.json" \
+              --clobber
 
   publish:
     name: Publish to PyPI

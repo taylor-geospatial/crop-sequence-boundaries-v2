@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+title: "csb — Open-Source Crop Sequence Boundaries Pipeline"
+message: "If you use this software or the published dataset, please cite both the software and the technical report."
+type: software
+authors:
+  - family-names: Corley
+    given-names: Isaac
+    email: isaac.corley@taylorgeospatial.org
+    affiliation: Taylor Geospatial Institute
+license: Apache-2.0
+repository-code: "https://github.com/isaaccorley/crop-sequence-boundaries-v2"
+url: "https://github.com/isaaccorley/crop-sequence-boundaries-v2"
+version: "0.1.0"
+date-released: "2026-05-03"
+keywords:
+  - usda
+  - crop-sequence-boundaries
+  - cropland-data-layer
+  - cdl
+  - gis
+  - geoparquet
+  - pmtiles
+  - agriculture
+  - remote-sensing
+preferred-citation:
+  type: article
+  title: "An Open-Source Crop Sequence Boundaries Pipeline at 287x the Speed of USDA's ArcGIS Reference Implementation"
+  authors:
+    - family-names: Corley
+      given-names: Isaac
+  year: 2026
+  url: "https://github.com/isaaccorley/crop-sequence-boundaries-v2/blob/main/paper/csb_icml2026.tex"

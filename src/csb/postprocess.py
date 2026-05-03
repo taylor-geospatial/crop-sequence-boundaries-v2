@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+import pyarrow as pa
 from rich.console import Console
 
 from csb.config import ACRES_PER_SQM, DEFAULT_BOUNDARIES_PATH, DEFAULT_CPU_FRACTION, STATE_FIPS
@@ -131,6 +132,109 @@ def _build_national(conn: duckdb.DuckDBPyConnection, enrich_dir: Path) -> int:
     return row[0]
 
 
+def _dissolve_tile_edges(conn: duckdb.DuckDBPyConnection, start_year: int, end_year: int) -> int:
+    """Dissolve adjacent polygons with identical CDL{year} sequences.
+
+    Polygonize runs per 5000-px tile and emits independent polygons per tile;
+    a single field straddling a tile boundary becomes two records. This step
+    finds pairs of touching polygons whose entire CDL{year} sequence agrees
+    and merges each connected group into one (Multi)Polygon. Returns the
+    number of features removed (i.e. dissolved into a neighbor).
+    """
+    # Intersect requested years with columns actually present (defensive
+    # against fixtures / partial schemas).
+    present = {r[0] for r in conn.execute("DESCRIBE SELECT * FROM national LIMIT 0").fetchall()}
+    years = [y for y in range(start_year, end_year + 1) if f"CDL{y}" in present]
+    if not years:
+        return 0
+    # DuckDB's binder errors on wide self-joins that also reference a spatial
+    # predicate (`ST_Touches`) — see github.com/duckdb/duckdb-spatial #389.
+    # Workaround: spatial-join on geometry+oid only, then re-join attributes.
+    cdl_eq = " AND ".join(f"na.CDL{y} = nb.CDL{y}" for y in years)
+    pairs = conn.execute(f"""
+        WITH geom_pairs AS (
+            SELECT a.national_oid AS a_id, b.national_oid AS b_id
+            FROM national a JOIN national b
+              ON a.national_oid < b.national_oid
+             AND ST_Touches(a.geometry, b.geometry)
+        )
+        SELECT gp.a_id, gp.b_id
+        FROM geom_pairs gp
+        JOIN national na ON na.national_oid = gp.a_id
+        JOIN national nb ON nb.national_oid = gp.b_id
+        WHERE na.STATEFIPS = nb.STATEFIPS AND {cdl_eq}
+    """).fetchall()
+    if not pairs:
+        return 0
+
+    # Union-find over the candidate pairs to compute connected components.
+    parent: dict[int, int] = {}
+
+    def find(x: int) -> int:
+        while parent.get(x, x) != x:
+            parent[x] = parent.get(parent.get(x, x), parent.get(x, x))
+            x = parent[x]
+        return x
+
+    def union(x: int, y: int) -> None:
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            parent[max(rx, ry)] = min(rx, ry)
+
+    for a, b in pairs:
+        parent.setdefault(a, a)
+        parent.setdefault(b, b)
+        union(a, b)
+
+    # roots[id] = canonical id for each member of a multi-member group.
+    roots = [(oid, find(oid)) for oid in parent]
+    # Stable across re-runs: pick the smallest national_oid as the root.
+    roots_table = pa.table(
+        {
+            "national_oid": pa.array([r[0] for r in roots], type=pa.int64()),
+            "root_oid": pa.array([r[1] for r in roots], type=pa.int64()),
+        }
+    )
+    conn.register("dissolve_roots", roots_table)
+    n_groups = len({r for _, r in roots})
+    n_members = len(roots)
+
+    # GROUP BY root, ST_Union_Agg geometry, keep first attribute values.
+    conn.execute("""
+        CREATE OR REPLACE TABLE national_dissolved AS
+        WITH groups AS (
+            SELECT n.*, COALESCE(r.root_oid, n.national_oid) AS root_oid
+            FROM national n LEFT JOIN dissolve_roots r USING (national_oid)
+        )
+        SELECT
+            ANY_VALUE(STATEFIPS) AS STATEFIPS,
+            ANY_VALUE(STATEASD) AS STATEASD,
+            ANY_VALUE(ASD) AS ASD,
+            ANY_VALUE(CNTY) AS CNTY,
+            ANY_VALUE(CNTYFIPS) AS CNTYFIPS,
+            ANY_VALUE(CSBYEARS) AS CSBYEARS,
+            ANY_VALUE(effective_count) AS effective_count,
+            * EXCLUDE (
+                STATEFIPS, STATEASD, ASD, CNTY, CNTYFIPS, CSBYEARS,
+                effective_count, geometry, national_oid, root_oid
+            ),
+            ST_Union_Agg(geometry) AS geometry,
+            MIN(national_oid) AS national_oid
+        FROM groups
+        GROUP BY root_oid, ALL
+    """)
+    conn.execute("DROP TABLE national; ALTER TABLE national_dissolved RENAME TO national")
+    # Re-number national_oid 1..N by spatial-stable order (smallest old oid first).
+    conn.execute("""
+        CREATE OR REPLACE TABLE national_renumbered AS
+        SELECT * EXCLUDE (national_oid),
+               ROW_NUMBER() OVER (ORDER BY national_oid) AS national_oid
+        FROM national
+    """)
+    conn.execute("DROP TABLE national; ALTER TABLE national_renumbered RENAME TO national")
+    return n_members - n_groups
+
+
 def _compute_fields(conn: duckdb.DuckDBPyConnection) -> None:
     """Add derived fields: CSBACRES, INSIDE_X, INSIDE_Y, final CSBID."""
     conn.execute(f"""
@@ -244,6 +348,15 @@ def run_postprocess(
 
     count = _build_national(conn, enrich_dir)
     console.print(f"National: {count} features in {(time.perf_counter() - t0) / 60:.2f} min")
+
+    console.print("Dissolving polygons across tile boundaries...")
+    t_dissolve = time.perf_counter()
+    n_dissolved = _dissolve_tile_edges(conn, start_year, end_year)
+    if n_dissolved:
+        console.print(
+            f"  merged {n_dissolved:,} cross-tile fragments "
+            f"in {time.perf_counter() - t_dissolve:.1f}s"
+        )
 
     console.print("Computing CSBID, CSBACRES, INSIDE_X/Y...")
     _compute_fields(conn)
