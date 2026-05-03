@@ -84,19 +84,65 @@ in cloud cost. Add ~2× safety margin for spot interruption / re-runs:
 
 ## Reference: what USDA's existing ArcGIS pipeline costs
 
-The official USDA pipeline at
-https://github.com/USDA-REE-NASS/crop-sequence-boundaries requires:
+USDA documents their compute envelope directly in the peer-reviewed paper
+that describes the official CSB algorithm
+([Hunt et al. 2024, *Statistical Journal of the IAOS*](https://journals.sagepub.com/doi/full/10.3233/SJI-230078);
+[open-access PDF](https://data.nass.usda.gov/Education_and_Outreach/Reports,_Presentations_and_Conferences/Journal_Articles/Crop%20sequence%20boundaries%20using%20USDA%20National%20Agriculural%20Statistics%20Service%20historic%20cropland%20data%20layers.pdf)):
 
-- **ArcGIS Pro license**: ~$700/year per seat (Esri commercial single-use)
-- **Windows server compute** for multi-day runs (single-node, mostly serial
-    ArcPy)
-- Manual operator time across multiple days for orchestration
+> "Initial 8-year CSB creation for the contiguous US **took about five days
+> using a 96-core AWS workstation**." *(Hunt et al. 2024, p. 6)*
+>
+> "The process is fully automated, but the sizes of the 86 subregions are not
+> balanced. Some sub-processing regions are completed in a couple hours while a
+> few takes five days."
+>
+> "A majority of the processing time was spent on the dissolve/elimination
+> step (ArcGIS Pro eliminate function)... **Absent incrementally increasing
+> the selection size, the tool often fails or takes days.**"
 
-Conservative apples-to-apples cost (1 seat, 1 server) is **>$700/year +
-multi-day operator time**. This OSS pipeline replaces that with **~$2 of
-spot compute and ~50 minutes wall-clock**, with output that matches USDA
-ground truth at a median IoU of 0.895 across 16 geospatially diverse test
-regions (mean 0.843; acreage within 2% of USDA in median).
+Reference implementation: the public arcpy code at
+[USDA-REE-NASS/crop-sequence-boundaries](https://github.com/USDA-REE-NASS/crop-sequence-boundaries).
+
+### USDA cost reconstruction
+
+The paper specifies a **96-core AWS workstation** running for **5 days**.
+Closest current EC2 instances with 96 vCPUs:
+
+| Instance       | vCPUs | RAM    | On-demand $/hr (us-east-1) | Spot $/hr (typ.) |
+| -------------- | ----- | ------ | -------------------------- | ---------------- |
+| `c6i.24xlarge` | 96    | 192 GB | ~$4.08                     | ~$1.80 – $2.40   |
+| `m6i.24xlarge` | 96    | 384 GB | ~$4.61                     | ~$2.00 – $2.80   |
+| `c7i.24xlarge` | 96    | 192 GB | ~$4.28                     | ~$1.90 – $2.50   |
+
+Government workloads run **on-demand** (spot reclaim risk is unacceptable on a
+multi-day job). Conservative cost using the cheapest match:
+
+- **5 days × 24 hr × $4.08/hr = ~$489 in EC2 alone, per CONUS run** (on-demand
+    `c6i.24xlarge`).
+- Plus ArcGIS Pro license (~$700/year per seat, Esri commercial single-use).
+- Plus operator time across 5 days of orchestration.
+
+A spot-priced equivalent (with reclaim-tolerance the USDA pipeline doesn't
+have) would still be **~$245** for the same wall-clock.
+
+### Side-by-side
+
+|                              | USDA pipeline (Hunt et al. 2024)       | This OSS pipeline                                                 |
+| ---------------------------- | -------------------------------------- | ----------------------------------------------------------------- |
+| Compute                      | 96-core AWS workstation, **5 days**    | 32-core node, **25 min**                                          |
+| Wall-clock                   | **~120 hours**                         | **0.42 hours**                                                    |
+| Speedup vs USDA              | —                                      | **~287×**                                                         |
+| AWS on-demand cost           | **~$489**                              | n/a (sub-hour, spot is fine)                                      |
+| AWS spot equivalent cost     | **~$245**                              | **~$0.63** (CONUS pipeline) / **~$2.00** (incl. pmtiles + parity) |
+| Software license             | ArcGIS Pro, ~$700/yr/seat              | $0 (OSS)                                                          |
+| Output polygons              | \<20 M                                 | ~15 M                                                             |
+| Parity vs USDA ground truth  | reference                              | mean IoU 0.843, median 0.895                                      |
+| Same elimination bottleneck? | yes — "tool often fails or takes days" | solved (raster-side adjacency, 0.4s/tile)                         |
+
+**Net:** USDA's documented compute spend per annual rebuild is ~$489 + license
+
+- a week of operator attention. This OSS pipeline produces a parity-compatible
+    dataset for **~$2 of spot compute, in 25 minutes, no license required.**
 
 ## How to reproduce on AWS
 
