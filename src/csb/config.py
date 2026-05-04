@@ -37,13 +37,14 @@ DEFAULT_NATIONAL_CDL_DIR = "data/input/national_cdl"
 DEFAULT_BOUNDARIES_PATH = "data/input/boundaries/US48_ASD_CNTY_Albers.parquet"
 DEFAULT_OUTPUT_DIR = "data/output"
 
-# Polygonize tuning. Defaults match USDA's CSBElimination 4-pass schedule
-# and a 60 m simplification tolerance (the analogue of arcpy BEND_SIMPLIFY 60).
+# Polygonize tuning. Defaults match USDA's CSBElimination 4-pass schedule.
+# Simplification tolerance is 30 m (one CDL pixel) — the ablation in the
+# paper shows higher IoU than USDA's BEND_SIMPLIFY 60 m at +12% polygons.
 DEFAULT_TILE_SIZE = 5000
 DEFAULT_MIN_CROPLAND_YEARS = 2
 DEFAULT_ELIMINATE_THRESHOLDS: tuple[float, ...] = (100, 1000, 10000, 10000)
 DEFAULT_MIN_POLYGON_AREA = 10000
-DEFAULT_SIMPLIFY_TOLERANCE = 60
+DEFAULT_SIMPLIFY_TOLERANCE = 30
 
 # Parallelism.
 DEFAULT_CPU_FRACTION = 0.95

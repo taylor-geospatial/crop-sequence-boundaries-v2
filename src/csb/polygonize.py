@@ -197,11 +197,12 @@ def _phase1_polygonize(args: tuple[str, dict[str, Any]]) -> str:
 
     # Dissolve adjacent labels sharing the same combo (sliver absorption can
     # leave two former-adjacent regions touching with identical CDL sequence).
-    pre_n = n_lbl
-    lbl, n_lbl, combo_per_label = dissolve_same_combo(lbl, n_lbl, combo_per_label)
-    if n_lbl < pre_n:
-        logger.info("%s: same-combo dissolve %s → %s labels", area, pre_n, n_lbl)
-        eff_per_label = effective_per_combo[combo_per_label].astype(np.int16, copy=False)
+    if params.get("same_combo_dissolve", True):
+        pre_n = n_lbl
+        lbl, n_lbl, combo_per_label = dissolve_same_combo(lbl, n_lbl, combo_per_label)
+        if n_lbl < pre_n:
+            logger.info("%s: same-combo dissolve %s → %s labels", area, pre_n, n_lbl)
+            eff_per_label = effective_per_combo[combo_per_label].astype(np.int16, copy=False)
     gc.collect()
 
     # Drop labels below min_area before polygonizing.
@@ -332,6 +333,7 @@ def run_polygonize(
     phase2_workers: int | None = None,
     area: str | None = None,
     roads_mask: str | Path | None = None,
+    same_combo_dissolve: bool = True,
 ) -> Path:
     """Run polygonize for all (or one) window tile(s).
 
@@ -389,6 +391,7 @@ def run_polygonize(
         "eliminate_thresholds": list(eliminate_thresholds),
         "min_polygon_area": min_polygon_area,
         "roads_mask": str(roads_mask) if roads_mask else None,
+        "same_combo_dissolve": same_combo_dissolve,
     }
     p2_params = {
         "intermediate_dir": str(intermediate_dir),

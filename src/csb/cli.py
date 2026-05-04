@@ -220,6 +220,12 @@ def _polygonize_options(f):  # noqa: ANN001, ANN202 — Click decorator factory
             "buffers are excluded from the cropland mask before connected-components "
             "labeling so adjacent fields don't merge across roads.",
         ),
+        click.option(
+            "--same-combo-dissolve/--no-same-combo-dissolve",
+            "same_combo_dissolve",
+            default=True,
+            help="Toggle the same-combo dissolve pass (default on; off for ablation).",
+        ),
     ]
     for opt in reversed(flags):
         f = opt(f)
@@ -253,6 +259,7 @@ def polygonize(
     phase1_workers: int | None,
     phase2_workers: int | None,
     roads_mask: str | None,
+    same_combo_dissolve: bool,
 ) -> None:
     """Combine multi-year CDL → label-eliminate → simplify → GeoParquet."""
     from csb.polygonize import run_polygonize
@@ -277,6 +284,7 @@ def polygonize(
         phase2_workers=phase2_workers,
         area=area,
         roads_mask=roads_mask,
+        same_combo_dissolve=same_combo_dissolve,
     )
 
 
@@ -370,6 +378,7 @@ def run_all(
     phase1_workers: int | None,
     phase2_workers: int | None,
     roads_mask: str | None,
+    same_combo_dissolve: bool,
 ) -> None:
     """Run polygonize + postprocess back-to-back."""
     from csb.polygonize import run_polygonize
@@ -392,6 +401,7 @@ def run_all(
         phase1_workers=phase1_workers,
         phase2_workers=phase2_workers,
         roads_mask=roads_mask,
+        same_combo_dissolve=same_combo_dissolve,
     )
     run_postprocess(
         start_year=start_year,
