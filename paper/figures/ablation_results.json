@@ -1,0 +1,58 @@
+[
+  {
+    "id": "default",
+    "label": "default (s=60, dissolve)",
+    "simplify": 60.0,
+    "dissolve": true,
+    "wall_sec": 125.09304542501923,
+    "n_ours": 175121,
+    "n_usda": 104906,
+    "ratio_polys": 1.6693134806398109,
+    "acres_ours": 3480170.28033023,
+    "acres_usda": 3486519.3315219004,
+    "ratio_acres": 0.998178971464673,
+    "iou": 0.895760174058035
+  },
+  {
+    "id": "s30",
+    "label": "simplify 30 m",
+    "simplify": 30.0,
+    "dissolve": true,
+    "wall_sec": 124.4532566179987,
+    "n_ours": 178834,
+    "n_usda": 104906,
+    "ratio_polys": 1.7047070710922159,
+    "acres_ours": 3493844.5608640527,
+    "acres_usda": 3486519.3315219004,
+    "ratio_acres": 1.0021010149795886,
+    "iou": 0.9045509155547821
+  },
+  {
+    "id": "s120",
+    "label": "simplify 120 m",
+    "simplify": 120.0,
+    "dissolve": true,
+    "wall_sec": 130.23424744600197,
+    "n_ours": 159969,
+    "n_usda": 104906,
+    "ratio_polys": 1.5248794158580061,
+    "acres_ours": 3358267.771689354,
+    "acres_usda": 3486519.3315219004,
+    "ratio_acres": 0.9632150154244051,
+    "iou": 0.8659279741777397
+  },
+  {
+    "id": "no_dissolve",
+    "label": "no same-combo dissolve",
+    "simplify": 60.0,
+    "dissolve": false,
+    "wall_sec": 123.68225602002349,
+    "n_ours": 175121,
+    "n_usda": 104906,
+    "ratio_polys": 1.6693134806398109,
+    "acres_ours": 3480170.28033023,
+    "acres_usda": 3486519.3315219004,
+    "ratio_acres": 0.998178971464673,
+    "iou": 0.895760174058035
+  }
+]
