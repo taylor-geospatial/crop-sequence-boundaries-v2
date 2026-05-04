@@ -69,8 +69,43 @@ def _tile_windows(width: int, height: int, tile_size: int) -> list[tuple[str, Wi
     return tiles
 
 
+def _majority_filter_uint8(arr: np.ndarray, size: int = 3) -> np.ndarray:
+    """3x3 (or other odd size) majority filter on uint8 raster.
+
+    For each pixel, return the most-common value in its size×size neighborhood.
+    Implemented as per-class indicator convolution: O(K · H · W) where K is
+    the number of distinct values present (typically <50 for CDL). Boundary
+    treated as 'nearest' (extend edge pixels).
+    """
+    from scipy.signal import fftconvolve
+
+    if size <= 1:
+        return arr
+    H, W = arr.shape
+    pad = size // 2
+    padded = np.pad(arr, pad, mode="edge")
+    kernel = np.ones((size, size), dtype=np.float32)
+    counts = np.zeros((H, W), dtype=np.float32)
+    best = np.zeros((H, W), dtype=np.uint8)
+    present = np.unique(padded)
+    for v in present:
+        if v == 0:
+            # 0 = NoData / background — treat as "absent" so single-pixel 0s in
+            # an otherwise homogeneous field get replaced with the field's class.
+            continue
+        is_v = (padded == v).astype(np.float32)
+        c = fftconvolve(is_v, kernel, mode="valid")
+        better = c > counts
+        counts[better] = c[better]
+        best[better] = v
+    return best
+
+
 def _combine_years_windowed(
-    national_cdl: Path, years: list[int], window: Window
+    national_cdl: Path,
+    years: list[int],
+    window: Window,
+    smooth_size: int = 1,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, Any]:
     """Read window from each year's CDL, pack sequences.
 
@@ -97,6 +132,13 @@ def _combine_years_windowed(
             arr = src.read(1, window=window, out_dtype=np.uint8)
             if transform is None:
                 transform = rasterio.windows.transform(window, src.transform)
+        # Smooth single-pixel CDL classification noise via majority filter
+        # before remapping & bit-packing. USDA's GEE pre-prep does an
+        # equivalent step that we don't otherwise replicate; without it,
+        # single-pixel anomalies create distinct 8-tuple combos that
+        # fragment otherwise-homogeneous fields.
+        if smooth_size > 1:
+            arr = _majority_filter_uint8(arr, size=smooth_size)
         # Remap non-cropland in place (uint8 stays uint8).
         non_crop = (arr > CDL_CROP_MAX) & (arr != 0)
         if non_crop.any():
@@ -146,13 +188,14 @@ def _phase1_polygonize(args: tuple[str, dict[str, Any]]) -> str:
     thresholds: list[float] = list(params["eliminate_thresholds"])
     min_area_keep: float = params["min_polygon_area"]
     roads_mask_path: str | None = params.get("roads_mask")
+    smooth_size: int = params.get("cdl_smooth_size", 1)
 
     years = list(range(start_year, end_year + 1))
     t0 = time.perf_counter()
 
-    logger.info("%s: Phase 1 — read+combine %s years", area, len(years))
+    logger.info("%s: Phase 1 — read+combine %s years (smooth=%s)", area, len(years), smooth_size)
     combo_raster, effective_per_combo, cdl_per_combo_year, transform = _combine_years_windowed(
-        national_cdl, years, window
+        national_cdl, years, window, smooth_size=smooth_size
     )
 
     # Keep filter: effective_count (cropland years - barren years) >= min_cropland_years.
@@ -334,6 +377,7 @@ def run_polygonize(
     area: str | None = None,
     roads_mask: str | Path | None = None,
     same_combo_dissolve: bool = True,
+    cdl_smooth_size: int = 1,
 ) -> Path:
     """Run polygonize for all (or one) window tile(s).
 
@@ -392,6 +436,7 @@ def run_polygonize(
         "min_polygon_area": min_polygon_area,
         "roads_mask": str(roads_mask) if roads_mask else None,
         "same_combo_dissolve": same_combo_dissolve,
+        "cdl_smooth_size": cdl_smooth_size,
     }
     p2_params = {
         "intermediate_dir": str(intermediate_dir),
