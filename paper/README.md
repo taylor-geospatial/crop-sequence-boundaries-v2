@@ -1,54 +1,63 @@
 # Paper: CSB v2 vs USDA ArcGIS reference
 
-LaTeX source for the ICML 2026 submission documenting the open-source
-Crop Sequence Boundaries pipeline in this repo.
+LaTeX source for the *Computers and Electronics in Agriculture* (Elsevier)
+submission documenting the open-source Crop Sequence Boundaries pipeline
+in this repo.
 
 ## Contents
 
 ```
 paper/
-  csb_icml2026.tex   # main manuscript (preprint mode)
-  csb.bib            # BibTeX entries
-  Makefile           # latexmk-based build
-  README.md          # this file
-  sty/               # vendored ICML 2026 author-kit styles
-    icml2026.sty
-    icml2026.bst
-    fancyhdr.sty
-    algorithm.sty
-    algorithmic.sty
-  figures/           # paper figures (.gitkeep placeholder)
+  csb_cea.tex          # main manuscript (elsarticle preprint mode)
+  csb.bib              # BibTeX entries
+  Makefile             # latexmk-based build
+  README.md            # this file
+  elsarticle.cls       # vendored Elsevier document class
+  elsarticle-num.bst   # vendored numeric bibliography style
+  figures/             # paper figures + matplotlib generators
 ```
 
-The styles in `sty/` are taken from the official ICML 2026 author kit
-(`https://media.icml.cc/Conferences/ICML2026/Styles/icml2026.zip`).
+`elsarticle.cls` / `elsarticle-num.bst` come from the Elsevier author kit
+([assets.ctfassets.net](https://assets.ctfassets.net/o78em1y1w4i4/4MpsJHO0MOJ2xZuwGTAbOZ/7bc64af36477c5d6cfce335a1f872363/elsarticle.zip)).
+A pristine copy of the upstream zip is unpacked under `elsevier/`
+(gitignored) for reference.
 
 ## Build
 
 ```sh
-make pdf       # build csb_icml2026.pdf via latexmk
+make pdf       # build csb_cea.pdf via latexmk
 make clean     # drop intermediates
 make distclean # also drop the PDF
 ```
 
 Requires `latexmk` and a TeX Live distribution with `microtype`,
-`hyperref`, `cleveref`, `booktabs`, `siunitx`, and `natbib`. The
-Makefile sets `TEXINPUTS`/`BSTINPUTS` so the ICML class and
-bibliography style are picked up from `sty/` without a system install.
+`hyperref`, `cleveref`, `booktabs`, `siunitx`, `natbib`, `algorithm`,
+and `algpseudocode`.
 
 ## Submission modes
 
-The manuscript is built in `preprint` mode by default. To switch:
+The manuscript is built in `preprint` mode by default (single column,
+12 pt, generous margins — the format reviewers prefer for markup).
+To estimate the published two-column production length, edit
+`csb_cea.tex` line 3:
 
-| Mode             | Edit `csb_icml2026.tex` line          |
-| ---------------- | ------------------------------------- |
-| Anonymous review | `\usepackage{sty/icml2026}`           |
-| Preprint (now)   | `\usepackage[preprint]{sty/icml2026}` |
-| Camera-ready     | `\usepackage[accepted]{sty/icml2026}` |
+| Mode             | Document class options                  |
+| ---------------- | --------------------------------------- |
+| Review (now)     | `[preprint,12pt]`                       |
+| Two-column 3p    | `[final,3p,times,twocolumn]`            |
+| Two-column 5p    | `[final,5p,times,twocolumn]`            |
 
 ## Figures
 
-`figures/hero_conus.pdf` and `figures/pipeline.pdf` are referenced by
-the manuscript. Drop the rendered PDFs into `figures/` once the visual
-diff renderer has produced them; the build will pick them up
-automatically.
+Generators live under `figures/make_*.py`. Run them from the repo root
+to (re)build the corresponding PDFs:
+
+```sh
+uv run python paper/figures/make_acres_scatter.py
+uv run python paper/figures/make_per_tile_iou.py
+uv run python paper/figures/make_per_class.py
+uv run python paper/figures/make_stage_breakdown.py
+uv run python paper/figures/make_bottom3_montage.py
+```
+
+`hero_conus.pdf` and `pipeline.pdf` are produced separately.
