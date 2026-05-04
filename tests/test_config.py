@@ -33,9 +33,9 @@ def test_constants() -> None:
 
 
 def test_pipeline_defaults() -> None:
-    """Defaults match the 4-pass USDA elimination schedule + 60m simplify."""
+    """Defaults match the 4-pass USDA elimination schedule + 30m simplify."""
     assert DEFAULT_TILE_SIZE == 5000
     assert DEFAULT_MIN_CROPLAND_YEARS == 2
     assert DEFAULT_ELIMINATE_THRESHOLDS == (100, 1000, 10000, 10000)
     assert DEFAULT_MIN_POLYGON_AREA == 10000
-    assert DEFAULT_SIMPLIFY_TOLERANCE == 60
+    assert DEFAULT_SIMPLIFY_TOLERANCE == 30

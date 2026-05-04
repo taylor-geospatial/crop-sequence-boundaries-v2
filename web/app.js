@@ -3,22 +3,18 @@
 
 const SOURCES = {
   usda: {
-    url: "pmtiles://https://us-west-2.opendata.source.coop/ftw/usda-csb/csb_2025.pmtiles",
+    url: "pmtiles://https://data.source.coop/ftw/usda-csb/csb_2025.pmtiles",
     label: "USDA v1",
     color: "#e89c2b",
+    sourceLayer: "fields", // USDA's archive uses 'fields' not 'csb'
   },
   ours: {
-    url: "pmtiles://https://us-west-2.opendata.source.coop/ftw/usda-csb/csb_v2_2025.pmtiles",
+    url: "pmtiles://https://data.source.coop/ftw/usda-csb/csb_v2_2025.pmtiles",
     label: "Ours v2",
     color: "#3aa8ff",
+    sourceLayer: "csb", // tippecanoe -l csb
   },
 };
-
-// Layer name baked in by tippecanoe (-l csb). USDA's 2025 PMTiles also uses
-// "csb" for its source-layer name. If a future archive renames, the JS will
-// log a warning and the layer simply won't render — inspect the archive's
-// metadata via `pmtiles.PMTiles(url).getTileJson()` to confirm.
-const SOURCE_LAYER = "csb";
 
 const protocol = new pmtiles.Protocol();
 maplibregl.addProtocol("pmtiles", protocol.tile);
@@ -69,7 +65,7 @@ const map = new maplibregl.Map({
         id: "csb-usda-fill",
         type: "fill",
         source: "csb-usda",
-        "source-layer": SOURCE_LAYER,
+        "source-layer": SOURCES.usda.sourceLayer,
         paint: {
           "fill-color": SOURCES.usda.color,
           "fill-opacity": 0.55,
@@ -80,7 +76,7 @@ const map = new maplibregl.Map({
         id: "csb-ours-fill",
         type: "fill",
         source: "csb-ours",
-        "source-layer": SOURCE_LAYER,
+        "source-layer": SOURCES.ours.sourceLayer,
         paint: {
           "fill-color": SOURCES.ours.color,
           "fill-opacity": 0.55,
@@ -91,7 +87,7 @@ const map = new maplibregl.Map({
         id: "csb-usda-line",
         type: "line",
         source: "csb-usda",
-        "source-layer": SOURCE_LAYER,
+        "source-layer": SOURCES.usda.sourceLayer,
         minzoom: 9,
         paint: {
           "line-color": SOURCES.usda.color,
@@ -103,7 +99,7 @@ const map = new maplibregl.Map({
         id: "csb-ours-line",
         type: "line",
         source: "csb-ours",
-        "source-layer": SOURCE_LAYER,
+        "source-layer": SOURCES.ours.sourceLayer,
         minzoom: 9,
         paint: {
           "line-color": SOURCES.ours.color,
@@ -173,12 +169,23 @@ function popupHandler(group) {
     if (!e.features || !e.features.length) return;
     const f = e.features[0];
     const props = f.properties || {};
+
+    // v2 schema: CDL2018..CDL2025 columns. v1 schema: CSBYEARS string.
     const cdlYears = Object.keys(props)
       .filter((k) => /^CDL\d{4}$/.test(k))
       .sort();
-    const rows = cdlYears
-      .map((k) => `<tr><td>${k.slice(3)}</td><td>${props[k]}</td></tr>`)
-      .join("");
+    const rows = cdlYears.length
+      ? cdlYears
+          .map((k) => `<tr><td>${k.slice(3)}</td><td>${props[k]}</td></tr>`)
+          .join("")
+      : props.CSBYEARS
+        ? String(props.CSBYEARS)
+            .split(/[,\s]+/)
+            .filter(Boolean)
+            .map((v, i) => `<tr><td>yr${i + 1}</td><td>${v}</td></tr>`)
+            .join("")
+        : "";
+
     const acres = props.CSBACRES || props.Shape_area;
     const html = `
       <div class="popup">
@@ -230,6 +237,9 @@ document.head.appendChild(popupCss);
 
 map.on("error", (e) => {
   if (e?.error?.message?.includes("source-layer")) {
-    console.warn("If you see no polygons, the PMTiles source-layer name may not be 'csb' — check the archive metadata.");
+    console.warn(
+      "Source-layer mismatch — v1 expects 'fields', v2 expects 'csb'. " +
+        "Inspect the archive metadata to confirm."
+    );
   }
 });
