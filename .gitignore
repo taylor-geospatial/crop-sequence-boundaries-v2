@@ -27,3 +27,15 @@ htmlcov/
 .pyre/
 .ipynb_checkpoints
 .claude/
+
+# LaTeX build artifacts
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.fls
+paper/*.fdb_latexmk
+paper/*.bbl
+paper/*.blg
+paper/pdflatex*.fls
+paper/csb_icml2026.pdf
+paper/figures/hero_conus.png

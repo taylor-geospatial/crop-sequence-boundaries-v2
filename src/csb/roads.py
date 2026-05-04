@@ -26,7 +26,10 @@ from typing import TYPE_CHECKING
 
 import duckdb
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 import rasterio.features
+import shapely
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -35,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 # Pinned Overture release. Update when a newer release is desired; the
 # schema is stable across recent releases per the Overture spec.
-DEFAULT_OVERTURE_RELEASE = "2025-01-22.0"
+DEFAULT_OVERTURE_RELEASE = "2026-04-15.0"
 
 # Road classes worth preserving as field separators. We exclude footways /
 # cycleways / paths (too thin to matter at 30m) but keep everything from
@@ -85,14 +88,14 @@ def fetch_overture_roads(
     conn.execute(f"PRAGMA threads={threads}")
 
     overture_root = (
-        f"s3://overturemaps-us-west-2/release/{release}"
-        "/theme=transportation/type=segment/*"
+        f"s3://overturemaps-us-west-2/release/{release}/theme=transportation/type=segment/*"
     )
     logger.info("downloading Overture transportation segments (release %s)", release)
+    conn.execute("SET s3_region='us-west-2'")
     conn.execute(f"""
         CREATE OR REPLACE TEMP TABLE roads_4326 AS
         SELECT
-            ST_GeomFromWKB(geometry) AS geom,
+            geometry AS geom,
             CASE
                 WHEN subtype = 'rail' THEN 'rail'
                 ELSE class
@@ -111,33 +114,30 @@ def fetch_overture_roads(
     logger.info("  %s segments before reproject + buffer", n[0])
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    # Materialise buffered + reprojected geometry first, then write with explicit
-    # xmin/xmax/ymin/ymax columns so DuckDB row-group stats prune at query time.
-    conn.execute(f"""
-        CREATE OR REPLACE TEMP TABLE roads_5070 AS
-        SELECT
-            ST_Buffer(ST_Transform(geom, 'EPSG:4326', 'EPSG:5070'), {buffer_m}) AS geom,
-            kind
+    # DuckDB spatial 1.5.0 segfaults on ST_Buffer of transformed lines, so we
+    # only do reprojection in DuckDB and buffer in shapely.
+    rows = conn.execute("""
+        SELECT ST_AsWKB(ST_Transform(geom, 'EPSG:4326', 'EPSG:5070', always_xy => true)) AS wkb, kind
         FROM roads_4326
-    """)
-    conn.execute(f"""
-        COPY (
-            SELECT
-                ST_AsWKB(geom) AS geometry,
-                kind,
-                ST_XMin(geom) AS xmin,
-                ST_YMin(geom) AS ymin,
-                ST_XMax(geom) AS xmax,
-                ST_YMax(geom) AS ymax
-            FROM roads_5070
-            ORDER BY ST_Hilbert(
-                geom,
-                {{'min_x': -2356095.0, 'min_y': 270000.0,
-                  'max_x': 2260000.0, 'max_y': 3175000.0}}::BOX_2D
-            )
-        ) TO '{output}' (FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 50000)
-    """)
+    """).fetchall()
     conn.close()
+
+    geoms = shapely.from_wkb([bytes(r[0]) for r in rows])
+    kinds = [r[1] for r in rows]
+    buffered = shapely.buffer(geoms, buffer_m)
+    minx, miny, maxx, maxy = shapely.bounds(buffered).T
+    wkb_out = shapely.to_wkb(buffered)
+    table = pa.table(
+        {
+            "geometry": pa.array(wkb_out, type=pa.binary()),
+            "kind": pa.array(kinds, type=pa.string()),
+            "xmin": pa.array(minx, type=pa.float64()),
+            "ymin": pa.array(miny, type=pa.float64()),
+            "xmax": pa.array(maxx, type=pa.float64()),
+            "ymax": pa.array(maxy, type=pa.float64()),
+        }
+    )
+    pq.write_table(table, output, compression="zstd", row_group_size=50000)
     logger.info("wrote %s (%.2f GB)", output, output.stat().st_size / 1e9)
     return output
 
@@ -178,7 +178,9 @@ def rasterize_roads_for_window(
     # remaining rows.
     schema_cols = {
         r[0]
-        for r in conn.execute(f"DESCRIBE SELECT * FROM read_parquet('{roads_parquet}') LIMIT 0").fetchall()
+        for r in conn.execute(
+            f"DESCRIBE SELECT * FROM read_parquet('{roads_parquet}') LIMIT 0"
+        ).fetchall()
     }
     has_bbox = {"xmin", "ymin", "xmax", "ymax"} <= schema_cols
     if has_bbox:
@@ -205,8 +207,6 @@ def rasterize_roads_for_window(
 
     if not rows:
         return np.zeros((height, width), dtype=bool)
-
-    import shapely
 
     geoms = shapely.from_wkb([bytes(r[0]) for r in rows])
     mask = rasterio.features.rasterize(

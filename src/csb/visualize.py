@@ -42,15 +42,11 @@ def _query_bbox(
 
 def _polys_to_paths(geoms: list[shapely.Geometry]) -> list[np.ndarray]:
     """Flatten Polygon / MultiPolygon to a list of (N, 2) exterior-ring arrays."""
-    paths: list[np.ndarray] = []
-    for geom in geoms:
-        if geom is None or geom.is_empty:
-            continue
-        parts = geom.geoms if geom.geom_type == "MultiPolygon" else [geom]
-        for part in parts:
-            xs, ys = part.exterior.coords.xy
-            paths.append(np.column_stack([xs, ys]))
-    return paths
+    # shapely.get_parts flattens (Multi)Polygon and GeometryCollection in one
+    # pass; non-polygon parts (which make_valid can emit) are filtered.
+    parts = shapely.get_parts(geoms)
+    parts = parts[shapely.get_type_id(parts) == 3]  # 3 = Polygon
+    return [np.asarray(p.exterior.coords) for p in parts if not p.is_empty]
 
 
 def _draw(
@@ -111,6 +107,8 @@ def render_comparison(
         # but guards against test fixtures or edge cases).
         ours_union = shapely.unary_union(ours) if ours else empty
         usda_union = shapely.unary_union(usda) if usda else empty
+    ours_union = shapely.make_valid(ours_union)
+    usda_union = shapely.make_valid(usda_union)
     intersection = ours_union.intersection(usda_union)
     sym_diff = ours_union.symmetric_difference(usda_union)
 
@@ -118,26 +116,42 @@ def render_comparison(
     if title:
         fig.suptitle(title, fontsize=11)
     _draw(
-        axes[0], _polys_to_paths(ours),
-        facecolor="#1f77b4", edgecolor="#0d4f8b", alpha=0.6,
-        title=f"ours ({len(ours):,} polys)", bbox=bbox_5070,
+        axes[0],
+        _polys_to_paths(ours),
+        facecolor="#1f77b4",
+        edgecolor="#0d4f8b",
+        alpha=0.6,
+        title=f"ours ({len(ours):,} polys)",
+        bbox=bbox_5070,
     )
     _draw(
-        axes[1], _polys_to_paths(usda),
-        facecolor="#ff7f0e", edgecolor="#a04500", alpha=0.6,
-        title=f"USDA ({len(usda):,} polys)", bbox=bbox_5070,
+        axes[1],
+        _polys_to_paths(usda),
+        facecolor="#ff7f0e",
+        edgecolor="#a04500",
+        alpha=0.6,
+        title=f"USDA ({len(usda):,} polys)",
+        bbox=bbox_5070,
     )
     inter_paths = _polys_to_paths([intersection]) if not intersection.is_empty else []
     _draw(
-        axes[2], inter_paths,
-        facecolor="#2ca02c", edgecolor="#1a6e1a", alpha=0.6,
-        title=f"intersection ({intersection.area / 1e6:.1f} km²)", bbox=bbox_5070,
+        axes[2],
+        inter_paths,
+        facecolor="#2ca02c",
+        edgecolor="#1a6e1a",
+        alpha=0.6,
+        title=f"intersection ({intersection.area / 1e6:.1f} km²)",
+        bbox=bbox_5070,
     )
     sym_paths = _polys_to_paths([sym_diff]) if not sym_diff.is_empty else []
     _draw(
-        axes[3], sym_paths,
-        facecolor="#d62728", edgecolor="#7c1818", alpha=0.55,
-        title=f"sym-diff ({sym_diff.area / 1e6:.1f} km²)", bbox=bbox_5070,
+        axes[3],
+        sym_paths,
+        facecolor="#d62728",
+        edgecolor="#7c1818",
+        alpha=0.55,
+        title=f"sym-diff ({sym_diff.area / 1e6:.1f} km²)",
+        bbox=bbox_5070,
     )
     fig.tight_layout()
     output_png.parent.mkdir(parents=True, exist_ok=True)

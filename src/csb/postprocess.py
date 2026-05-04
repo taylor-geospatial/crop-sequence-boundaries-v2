@@ -14,8 +14,11 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+import numpy as np
 import pyarrow as pa
+import shapely
 from rich.console import Console
+from shapely.strtree import STRtree
 
 from csb.config import ACRES_PER_SQM, DEFAULT_BOUNDARIES_PATH, DEFAULT_CPU_FRACTION, STATE_FIPS
 from csb.io import write_geoparquet
@@ -121,7 +124,7 @@ def _build_national(conn: duckdb.DuckDBPyConnection, enrich_dir: Path) -> int:
         msg = f"No enriched parquets in {enrich_dir}"
         raise FileNotFoundError(msg)
 
-    parts = [f"SELECT * FROM '{f}'" for f in parquets]
+    parts = [f"SELECT *, '{f.stem}' AS tile_id FROM '{f}'" for f in parquets]
     conn.execute(f"""
         CREATE TABLE national AS
         SELECT *, ROW_NUMBER() OVER () AS national_oid
@@ -130,6 +133,25 @@ def _build_national(conn: duckdb.DuckDBPyConnection, enrich_dir: Path) -> int:
     row = conn.execute("SELECT COUNT(*) FROM national").fetchone()
     assert row is not None
     return row[0]
+
+
+def _union_group(args: tuple[int, list[bytes]]) -> tuple[int, bytes]:
+    root, wkbs = args
+    geoms = shapely.make_valid(shapely.from_wkb(wkbs))
+    return root, shapely.to_wkb(shapely.union_all(geoms))
+
+
+def _state_dissolve_pairs(
+    args: tuple[list[int], list[bytes], Any],
+) -> list[tuple[int, int]]:
+    oids, wkbs, cdl_arr = args
+    geoms = shapely.from_wkb(wkbs)
+    a_idx, b_idx = STRtree(geoms).query(geoms, predicate="touches")
+    keep = a_idx < b_idx
+    a_idx, b_idx = a_idx[keep], b_idx[keep]
+    same = (cdl_arr[a_idx] == cdl_arr[b_idx]).all(axis=1)
+    oids_arr = np.asarray(oids)
+    return list(zip(oids_arr[a_idx[same]].tolist(), oids_arr[b_idx[same]].tolist(), strict=True))
 
 
 def _dissolve_tile_edges(conn: duckdb.DuckDBPyConnection, start_year: int, end_year: int) -> int:
@@ -141,29 +163,68 @@ def _dissolve_tile_edges(conn: duckdb.DuckDBPyConnection, start_year: int, end_y
     and merges each connected group into one (Multi)Polygon. Returns the
     number of features removed (i.e. dissolved into a neighbor).
     """
-    # Intersect requested years with columns actually present (defensive
-    # against fixtures / partial schemas).
     present = {r[0] for r in conn.execute("DESCRIBE SELECT * FROM national LIMIT 0").fetchall()}
     years = [y for y in range(start_year, end_year + 1) if f"CDL{y}" in present]
     if not years:
         return 0
-    # DuckDB's binder errors on wide self-joins that also reference a spatial
-    # predicate (`ST_Touches`) — see github.com/duckdb/duckdb-spatial #389.
-    # Workaround: spatial-join on geometry+oid only, then re-join attributes.
-    cdl_eq = " AND ".join(f"na.CDL{y} = nb.CDL{y}" for y in years)
-    pairs = conn.execute(f"""
-        WITH geom_pairs AS (
-            SELECT a.national_oid AS a_id, b.national_oid AS b_id
-            FROM national a JOIN national b
-              ON a.national_oid < b.national_oid
-             AND ST_Touches(a.geometry, b.geometry)
+    # DuckDB ST_Touches self-join segfaults at CONUS scale; do a tile-envelope
+    # bbox prefilter, then STRtree+touches per state in parallel workers.
+    eps = 1.0
+    conn.execute("""
+        CREATE OR REPLACE TEMP TABLE tile_env AS
+        SELECT tile_id,
+               MIN(ST_XMin(geometry)) AS xmin,
+               MIN(ST_YMin(geometry)) AS ymin,
+               MAX(ST_XMax(geometry)) AS xmax,
+               MAX(ST_YMax(geometry)) AS ymax
+        FROM national GROUP BY tile_id
+    """)
+    cols = ["national_oid", "STATEFIPS", *(f"CDL{y}" for y in years), "geometry"]
+    select_cols = ", ".join(
+        f"n.{c}" if c != "geometry" else "ST_AsWKB(n.geometry) AS geometry" for c in cols
+    )
+    df = conn.execute(f"""
+        SELECT {select_cols}
+        FROM national n JOIN tile_env e USING (tile_id)
+        WHERE ST_XMin(n.geometry) <= e.xmin + {eps}
+           OR ST_YMin(n.geometry) <= e.ymin + {eps}
+           OR ST_XMax(n.geometry) >= e.xmax - {eps}
+           OR ST_YMax(n.geometry) >= e.ymax - {eps}
+    """).to_arrow_table()
+    total_row = conn.execute("SELECT COUNT(*) FROM national").fetchone()
+    assert total_row is not None
+    logger.info("dissolve candidate polygons: %s of %s", df.num_rows, total_row[0])
+
+    states_np = df.column("STATEFIPS").to_numpy(zero_copy_only=False)
+    oids_np = df.column("national_oid").to_numpy()
+    geom_list = df.column("geometry").to_pylist()
+    cdl_cols = [df.column(f"CDL{y}").to_numpy() for y in years]
+
+    state_indices: dict[str, np.ndarray] = {}
+    for st in np.unique(states_np):
+        if st is None:
+            continue
+        state_indices[str(st)] = np.where(states_np == st)[0]
+
+    tasks = []
+    for idx in state_indices.values():
+        if idx.size < 2:
+            continue
+        tasks.append(
+            (
+                oids_np[idx].tolist(),
+                [geom_list[i] for i in idx],
+                np.column_stack([c[idx] for c in cdl_cols]),
+            )
         )
-        SELECT gp.a_id, gp.b_id
-        FROM geom_pairs gp
-        JOIN national na ON na.national_oid = gp.a_id
-        JOIN national nb ON nb.national_oid = gp.b_id
-        WHERE na.STATEFIPS = nb.STATEFIPS AND {cdl_eq}
-    """).fetchall()
+
+    pairs: list[tuple[int, int]] = []
+    for state_pairs in parallel_map(
+        _state_dissolve_pairs,
+        tasks,
+        max_workers=worker_count(DEFAULT_CPU_FRACTION),
+    ):
+        pairs.extend(state_pairs)
     if not pairs:
         return 0
 
@@ -186,44 +247,47 @@ def _dissolve_tile_edges(conn: duckdb.DuckDBPyConnection, start_year: int, end_y
         parent.setdefault(b, b)
         union(a, b)
 
-    # roots[id] = canonical id for each member of a multi-member group.
-    roots = [(oid, find(oid)) for oid in parent]
-    # Stable across re-runs: pick the smallest national_oid as the root.
-    roots_table = pa.table(
-        {
-            "national_oid": pa.array([r[0] for r in roots], type=pa.int64()),
-            "root_oid": pa.array([r[1] for r in roots], type=pa.int64()),
-        }
-    )
-    conn.register("dissolve_roots", roots_table)
-    n_groups = len({r for _, r in roots})
-    n_members = len(roots)
+    # shapely union per group — DuckDB ST_Union_Agg segfaults at CONUS scale.
+    groups: dict[int, list[int]] = {}
+    for oid in parent:
+        groups.setdefault(find(oid), []).append(oid)
+    multi = {root: members for root, members in groups.items() if len(members) > 1}
+    n_groups = len(groups)
+    n_members = sum(len(v) for v in groups.values())
 
-    # GROUP BY root, ST_Union_Agg geometry, keep first attribute values.
-    conn.execute("""
-        CREATE OR REPLACE TABLE national_dissolved AS
-        WITH groups AS (
-            SELECT n.*, COALESCE(r.root_oid, n.national_oid) AS root_oid
-            FROM national n LEFT JOIN dissolve_roots r USING (national_oid)
+    if multi:
+        oid_to_idx = {int(o): i for i, o in enumerate(oids_np)}
+        union_tasks = [
+            (root, [geom_list[oid_to_idx[m]] for m in members]) for root, members in multi.items()
+        ]
+        new_geoms: dict[int, bytes] = {}
+        drop_oids: list[int] = []
+        for root, wkb_out in parallel_map(
+            _union_group,
+            union_tasks,
+            max_workers=worker_count(DEFAULT_CPU_FRACTION),
+        ):
+            new_geoms[root] = wkb_out
+            drop_oids.extend(o for o in multi[root] if o != root)
+
+        update_tbl = pa.table(
+            {
+                "national_oid": pa.array(list(new_geoms.keys()), type=pa.int64()),
+                "geometry_wkb": pa.array(list(new_geoms.values()), type=pa.binary()),
+            }
         )
-        SELECT
-            ANY_VALUE(STATEFIPS) AS STATEFIPS,
-            ANY_VALUE(STATEASD) AS STATEASD,
-            ANY_VALUE(ASD) AS ASD,
-            ANY_VALUE(CNTY) AS CNTY,
-            ANY_VALUE(CNTYFIPS) AS CNTYFIPS,
-            ANY_VALUE(CSBYEARS) AS CSBYEARS,
-            ANY_VALUE(effective_count) AS effective_count,
-            * EXCLUDE (
-                STATEFIPS, STATEASD, ASD, CNTY, CNTYFIPS, CSBYEARS,
-                effective_count, geometry, national_oid, root_oid
-            ),
-            ST_Union_Agg(geometry) AS geometry,
-            MIN(national_oid) AS national_oid
-        FROM groups
-        GROUP BY root_oid, ALL
-    """)
-    conn.execute("DROP TABLE national; ALTER TABLE national_dissolved RENAME TO national")
+        conn.register("dissolve_updates", update_tbl)
+        drop_tbl = pa.table({"national_oid": pa.array(drop_oids, type=pa.int64())})
+        conn.register("dissolve_drops", drop_tbl)
+        conn.execute("""
+            UPDATE national
+            SET geometry = ST_GeomFromWKB(u.geometry_wkb)
+            FROM dissolve_updates u
+            WHERE national.national_oid = u.national_oid
+        """)
+        conn.execute(
+            "DELETE FROM national WHERE national_oid IN (SELECT national_oid FROM dissolve_drops)"
+        )
     # Re-number national_oid 1..N by spatial-stable order (smallest old oid first).
     conn.execute("""
         CREATE OR REPLACE TABLE national_renumbered AS
@@ -362,7 +426,7 @@ def run_postprocess(
     _compute_fields(conn)
 
     national_parquet = output_dir / "national" / f"CSB{csb_tag}.parquet"
-    national_table = conn.execute("SELECT * FROM national").arrow().read_all()
+    national_table = conn.execute("SELECT * EXCLUDE (tile_id) FROM national").arrow().read_all()
     write_geoparquet(national_table, national_parquet)
     conn.close()
     console.print(f"National parquet: {national_parquet}")
