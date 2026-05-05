@@ -69,29 +69,27 @@ def _tile_windows(width: int, height: int, tile_size: int) -> list[tuple[str, Wi
     return tiles
 
 
-def _majority_filter_uint8(arr: np.ndarray, size: int = 3) -> np.ndarray:
-    """3x3 (or other odd size) majority filter on uint8 raster.
+def _focal_mode_uint8(arr: np.ndarray, radius: int = 1) -> np.ndarray:
+    """Focal-mode filter on uint8 raster.
 
-    For each pixel, return the most-common value in its size×size neighborhood.
+    For each pixel, return the most-common value in its (2r+1)×(2r+1) window.
     Implemented as per-class indicator convolution: O(K · H · W) where K is
-    the number of distinct values present (typically <50 for CDL). Boundary
-    treated as 'nearest' (extend edge pixels).
+    the number of distinct values present (typically <50 for CDL). Treats
+    value 0 as absent so single-pixel NoData gets replaced by surroundings.
     """
     from scipy.signal import fftconvolve
 
-    if size <= 1:
+    if radius < 1:
         return arr
+    size = 2 * radius + 1
     H, W = arr.shape
-    pad = size // 2
+    pad = radius
     padded = np.pad(arr, pad, mode="edge")
     kernel = np.ones((size, size), dtype=np.float32)
     counts = np.zeros((H, W), dtype=np.float32)
     best = np.zeros((H, W), dtype=np.uint8)
-    present = np.unique(padded)
-    for v in present:
+    for v in np.unique(padded):
         if v == 0:
-            # 0 = NoData / background — treat as "absent" so single-pixel 0s in
-            # an otherwise homogeneous field get replaced with the field's class.
             continue
         is_v = (padded == v).astype(np.float32)
         c = fftconvolve(is_v, kernel, mode="valid")
@@ -101,11 +99,82 @@ def _majority_filter_uint8(arr: np.ndarray, size: int = 3) -> np.ndarray:
     return best
 
 
+def _label_components_by_value(arr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Connected components where each label = a maximally-connected region of
+    same-value pixels. Returns (labels[H,W] int32, sizes[n+1] int32)."""
+    from scipy.ndimage import label as nd_label
+
+    H, W = arr.shape
+    labels = np.zeros((H, W), dtype=np.int32)
+    structure = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=np.uint8)
+    next_id = 1
+    sizes_list: list[int] = [0]  # background slot
+    for v in np.unique(arr):
+        if v == 0:
+            continue
+        mask = arr == v
+        l_v, n_v = nd_label(mask, structure=structure)
+        if n_v == 0:
+            continue
+        # Offset l_v by next_id - 1 so labels stay globally unique
+        labels[mask] = l_v[mask] + (next_id - 1)
+        # Record sizes for the n_v new labels
+        comp_sizes = np.bincount(l_v.ravel(), minlength=n_v + 1)[1:]
+        sizes_list.extend(comp_sizes.tolist())
+        next_id += n_v
+    return labels, np.asarray(sizes_list, dtype=np.int32)
+
+
+def _usda_focal_mode_filter(
+    arr: np.ndarray,
+    radius: int = 2,
+    min_patch_size: int = 5,
+    iterations: int = 4,
+    final_pass_radius: int = 0,
+) -> np.ndarray:
+    """USDA-style two-stage focal-mode filter.
+
+    Stage 1: iterated focal mode that only modifies pixels in connected
+    components below ``min_patch_size``. Repeats ``iterations`` times so that
+    small noise patches surrounding bigger patches get progressively eroded
+    while genuine large features are preserved.
+
+    Stage 2 (optional, ``final_pass_radius > 0``): unconditional focal mode
+    once over the whole raster to "exaggerate field boundaries" per the
+    USDA ICAS-2023 paper §3.1.
+
+    USDA parameters (at 10 m): radius=4, min_patch_size=40, iterations=8.
+    At 30 m, equivalents are roughly radius=2, min_patch_size=5, iterations=4
+    (each pixel is 9× the area, so radius and patch threshold scale by ~3).
+    """
+    if radius < 1 and final_pass_radius < 1:
+        return arr
+
+    if radius >= 1 and iterations > 0 and min_patch_size > 1:
+        for _ in range(iterations):
+            labels, sizes = _label_components_by_value(arr)
+            small_mask = sizes[labels] < min_patch_size
+            small_mask[labels == 0] = False
+            if not small_mask.any():
+                break
+            modes = _focal_mode_uint8(arr, radius=radius)
+            arr = np.where(small_mask, modes, arr)
+
+    if final_pass_radius >= 1:
+        arr = _focal_mode_uint8(arr, radius=final_pass_radius)
+
+    return arr
+
+
 def _combine_years_windowed(
     national_cdl: Path,
     years: list[int],
     window: Window,
     smooth_size: int = 1,
+    focal_radius: int = 0,
+    focal_min_patch: int = 5,
+    focal_iterations: int = 4,
+    focal_final_pass_radius: int = 0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, Any]:
     """Read window from each year's CDL, pack sequences.
 
@@ -132,13 +201,21 @@ def _combine_years_windowed(
             arr = src.read(1, window=window, out_dtype=np.uint8)
             if transform is None:
                 transform = rasterio.windows.transform(window, src.transform)
-        # Smooth single-pixel CDL classification noise via majority filter
-        # before remapping & bit-packing. USDA's GEE pre-prep does an
-        # equivalent step that we don't otherwise replicate; without it,
-        # single-pixel anomalies create distinct 8-tuple combos that
-        # fragment otherwise-homogeneous fields.
-        if smooth_size > 1:
-            arr = _majority_filter_uint8(arr, size=smooth_size)
+        # Smooth single-pixel CDL classification noise via focal-mode filter
+        # before remapping & bit-packing. USDA's GEE pre-prep applies an
+        # iterated focal mode at radius 4 / patch>40 / 8 iters at 10 m
+        # (ICAS-2023 §3.1); we approximate at 30 m with a smaller kernel
+        # and patch threshold (configurable below).
+        if focal_radius >= 1:
+            arr = _usda_focal_mode_filter(
+                arr,
+                radius=focal_radius,
+                min_patch_size=focal_min_patch,
+                iterations=focal_iterations,
+                final_pass_radius=focal_final_pass_radius,
+            )
+        elif smooth_size > 1:
+            arr = _focal_mode_uint8(arr, radius=smooth_size // 2)
         # Remap non-cropland in place (uint8 stays uint8).
         non_crop = (arr > CDL_CROP_MAX) & (arr != 0)
         if non_crop.any():
@@ -189,13 +266,33 @@ def _phase1_polygonize(args: tuple[str, dict[str, Any]]) -> str:
     min_area_keep: float = params["min_polygon_area"]
     roads_mask_path: str | None = params.get("roads_mask")
     smooth_size: int = params.get("cdl_smooth_size", 1)
+    focal_radius: int = params.get("focal_radius", 0)
+    focal_min_patch: int = params.get("focal_min_patch", 5)
+    focal_iterations: int = params.get("focal_iterations", 4)
+    focal_final_pass_radius: int = params.get("focal_final_pass_radius", 0)
 
     years = list(range(start_year, end_year + 1))
     t0 = time.perf_counter()
 
-    logger.info("%s: Phase 1 — read+combine %s years (smooth=%s)", area, len(years), smooth_size)
+    logger.info(
+        "%s: Phase 1 — read+combine %s years (smooth=%s, focal_r=%s, focal_min=%s, focal_iters=%s, focal_final=%s)",
+        area,
+        len(years),
+        smooth_size,
+        focal_radius,
+        focal_min_patch,
+        focal_iterations,
+        focal_final_pass_radius,
+    )
     combo_raster, effective_per_combo, cdl_per_combo_year, transform = _combine_years_windowed(
-        national_cdl, years, window, smooth_size=smooth_size
+        national_cdl,
+        years,
+        window,
+        smooth_size=smooth_size,
+        focal_radius=focal_radius,
+        focal_min_patch=focal_min_patch,
+        focal_iterations=focal_iterations,
+        focal_final_pass_radius=focal_final_pass_radius,
     )
 
     # Keep filter: effective_count (cropland years - barren years) >= min_cropland_years.
@@ -378,6 +475,10 @@ def run_polygonize(
     roads_mask: str | Path | None = None,
     same_combo_dissolve: bool = True,
     cdl_smooth_size: int = 1,
+    focal_radius: int = 0,
+    focal_min_patch: int = 5,
+    focal_iterations: int = 4,
+    focal_final_pass_radius: int = 0,
 ) -> Path:
     """Run polygonize for all (or one) window tile(s).
 
@@ -437,6 +538,10 @@ def run_polygonize(
         "roads_mask": str(roads_mask) if roads_mask else None,
         "same_combo_dissolve": same_combo_dissolve,
         "cdl_smooth_size": cdl_smooth_size,
+        "focal_radius": focal_radius,
+        "focal_min_patch": focal_min_patch,
+        "focal_iterations": focal_iterations,
+        "focal_final_pass_radius": focal_final_pass_radius,
     }
     p2_params = {
         "intermediate_dir": str(intermediate_dir),
