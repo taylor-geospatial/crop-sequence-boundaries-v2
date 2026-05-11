@@ -29,7 +29,7 @@ RUN git clone --depth 1 --branch "v${TIPPECANOE_VERSION}" \
   && make install PREFIX=/opt/tippecanoe
 
 # ---- runtime: python + csb ----------------------------------------------
-FROM python:3.13-slim-bookworm@sha256:2dbc4d9f2b45953333deb2e7aafb6e36cc945c23748f66cad48943b9747b2916 AS runtime
+FROM python:3.14-slim-bookworm@sha256:cba2eed20b946f0fcf51f2e736f00b71921884b0704b4301febf8d01032b1792 AS runtime
 
 # Minimal GDAL/PROJ runtime libs for rasterio/pyogrio/pyproj wheels. The
 # wheels bundle their own GDAL, but libsqlite3 + libexpat are needed by the
