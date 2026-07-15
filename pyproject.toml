@@ -1,0 +1,96 @@
+[build-system]
+build-backend = "uv_build"
+requires = [ "uv-build>=0.9.3,<1" ]
+
+[project]
+name = "crop-sequence-boundaries"
+version = "0.1.0"
+description = "Open-source pipeline for USDA Crop Sequence Boundaries from Cropland Data Layer rasters."
+readme = "README.md"
+keywords = [ "agriculture", "cdl", "crop-sequence", "geoparquet", "gis", "pmtiles", "usda" ]
+license = "Apache-2.0"
+license-files = [ "LICENSE" ]
+authors = [
+  { name = "Isaac Corley", email = "isaac.corley@proton.me" },
+]
+requires-python = ">=3.12"
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Scientific/Engineering :: GIS",
+]
+dependencies = [
+  "click>=8,<9",
+  "contourrs>=0,<1",
+  "duckdb>=1,<2",
+  "geopandas>=1,<2",
+  "matplotlib>=3.8,<4",
+  "numpy>=2,<3",
+  "pyarrow>=23,<24",
+  "pyogrio>=0.10,<1",
+  "pyproj>=3.6,<4",
+  "rasterio>=1,<2",
+  "rich>=14,<15",
+  "scikit-image>=0.24,<1",
+  "scipy>=1.14,<2",
+  "shapely>=2,<3",
+]
+urls.Homepage = "https://github.com/isaaccorley/crop-sequence-boundaries-v2"
+urls.Issues = "https://github.com/isaaccorley/crop-sequence-boundaries-v2/issues"
+urls.Repository = "https://github.com/isaaccorley/crop-sequence-boundaries-v2"
+scripts.csb = "csb.cli:main"
+
+[dependency-groups]
+dev = [
+  "pre-commit>=4,<5",
+  "pytest>=9,<10",
+  "pytest-cov>=7,<8",
+  "pytest-xdist>=3,<4",
+  "ruff>=0,<1",
+  "ty>=0,<1",
+]
+
+[tool.uv]
+build-backend.module-name = "csb"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+force-exclude = true
+lint.extend-select = [
+  "ANN",
+  "B",
+  "C4",
+  "EXE",
+  "FA",
+  "FLY",
+  "FURB",
+  "G",
+  "I",
+  "ISC",
+  "LOG",
+  "PERF",
+  "PGH",
+  "PIE",
+  "PT",
+  "PYI",
+  "RET",
+  "RSE",
+  "RUF",
+  "SIM",
+  "SLOT",
+  "TCH",
+  "TRY",
+  "UP",
+  "W",
+]
+lint.isort.known-first-party = [ "csb" ]
+
+[tool.pytest]
+ini_options.testpaths = [ "tests" ]
+ini_options.addopts = [ "-n", "0" ]  # xdist available; use -n auto when suite grows past ~10s

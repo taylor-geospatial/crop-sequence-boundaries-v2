@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7.4
+        with:
+          enable-cache: true
+          # Cache key includes pyproject.toml + uv.lock so a refreshed lock
+          # busts the cache. The actual venv lives in ~/.cache/uv.
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Install Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
+
+      # Test against the *latest* compatible versions of every dep, not the
+      # pinned lock. Lock file remains the dev/reproducibility baseline; CI
+      # is the canary for upstream breakage.
+      - name: Refresh lock file with latest dep versions
+        run: uv lock --upgrade
+
+      - name: Sync (runtime + dev)
+        run: uv sync --all-extras
+
+      - name: Run pre-commit
+        run: uv run pre-commit run --all-files --show-diff-on-failure
+
+      - name: Run pytest
+        run: uv run pytest tests/ -q --cov=src --cov-report=term-missing
