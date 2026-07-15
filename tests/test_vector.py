@@ -1,15 +1,9 @@
 """Tests for csb.utils — vector operations."""
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
-
 import numpy as np
 import pyarrow as pa
+from affine import Affine
 from rasterio.transform import from_bounds
-
-if TYPE_CHECKING:
-    from affine import Affine
 
 from csb.utils import polygonize
 

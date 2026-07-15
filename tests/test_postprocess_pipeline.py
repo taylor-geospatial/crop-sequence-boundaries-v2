@@ -1,9 +1,7 @@
 """Tests for csb.postprocess — _spatial_join_boundaries, _build_national,
 _compute_fields, _export_state, and run_postprocess."""
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
+from pathlib import Path
 from unittest.mock import patch
 
 import duckdb
@@ -20,10 +18,6 @@ from csb.postprocess import (
     _spatial_join_boundaries,
     run_postprocess,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -14,6 +14,8 @@
 \usepackage{siunitx}
 \usepackage{hyperref}
 \usepackage[capitalize,noabbrev]{cleveref}
+\usepackage{placeins}
+\setlength{\emergencystretch}{3em}
 
 \journal{Computers and Electronics in Agriculture}
 
@@ -25,31 +27,30 @@
 
 \author[a]{Isaac Corley}
 \ead{isaac.corley@taylorgeospatial.org}
-\affiliation[a]{organization={Taylor Geospatial Institute}}
+\affiliation[a]{organization={Taylor Geospatial}}
 
 \begin{abstract}
 The USDA Crop Sequence Boundaries (CSB) product partitions the contiguous
-United States into per-field polygons whose attributes encode the multi-year
-sequence of Cropland Data Layer~(CDL) classifications. The USDA ArcPy
-pipeline described by Hunt et al.~\cite{hunt2024csb} requires an
-ArcGIS~Pro license and ran for five days on a 96-core AWS workstation,
-with polygon elimination identified by the authors as the dominant cost.
-We present a pure open-source replacement built on \textsc{rasterio},
-\textsc{scikit-image}, \textsc{shapely}, \textsc{DuckDB}, and
-\textsc{tippecanoe}. Three changes drive the result: a \texttt{uint64}
-bit-packing of the 8-year CDL combine that also avoids a silent \texttt{int64}
-overflow we found in a base-300 encoding (which inflated non-Iowa cropland
-area by $\sim$17\%); a raster-side reformulation of \textsc{Eliminate(LENGTH)}
-as a connected-component label graph with union-find merge passes; and a
-non-dissolving inclusion--exclusion estimator for polygon-coverage IoU. The
-pipeline produces the full 15.30~M polygon 2018--2025 CONUS dataset in
-25.2~min on a single 32-core node at \$0.63 of AWS spot compute (\$2
-including PMTiles and parity sweep). Against the released USDA CSB1825
-product, mean IoU is 0.846 across 16 geospatially diverse $5000^2$-pixel
-CONUS tiles (median 0.897; min 0.543 on sparse-cropland tiles where
-sub-hectare field geometry and simplification interactions dominate).
-Relative to the published USDA ArcPy runtime envelope, this is a
-$287\times$ wall-clock and $\sim$860$\times$ per-core reduction.
+United States into field-scale polygons whose attributes encode eight years
+of Cropland Data Layer (CDL) classifications. The ArcPy pipeline described by
+Hunt et al.~\cite{hunt2024csb} requires an ArcGIS~Pro license and ran for five
+days on a 96-core AWS workstation; the authors identify polygon elimination
+as its dominant cost. We present an open-source replacement built on
+\textsc{rasterio}, \textsc{scikit-image}, \textsc{shapely}, \textsc{DuckDB},
+and \textsc{tippecanoe}. We encode each eight-year CDL sequence in a
+\texttt{uint64}, avoiding a silent \texttt{int64} overflow in an earlier
+base-300 encoding that inflated non-Iowa cropland area by approximately 17\%.
+We then reformulate \textsc{Eliminate(LENGTH)} as union-find merge passes over
+a connected-component label graph. For validation, an inclusion--exclusion
+estimator computes polygon-coverage IoU without dissolving either coverage.
+On a single 32-core node, the pipeline produces the 15.30~M-polygon 2018--2025
+CONUS dataset in 25.2~min. At the 15 July 2026 lowest regional AWS Spot
+snapshot, those stages map to \$0.38 of compute, or \$0.97 including the
+optional PMTiles build and parity sweep. Against USDA CSB1825, mean IoU is
+0.846 over 16 geographically distributed $5000^2$-pixel tiles (median 0.897;
+minimum 0.543). The wall-clock and core-hour ratios relative to the published
+USDA runtime are $287\times$ and approximately $860\times$, respectively;
+these ratios are not same-hardware benchmarks.
 \end{abstract}
 
 \begin{keyword}
@@ -75,6 +76,8 @@ used by NASS in the June Area Survey, by the Natural Resources
 Conservation Service for crop-rotation summaries, and by the
 agricultural economics community as a public proxy for field
 boundaries that does not require commercial cadastral data.
+\Cref{fig:hero} shows the resulting national coverage and an Iowa comparison
+with USDA CSB1825.
 
 The reference implementation of CSB is an ArcPy script using ArcGIS~Pro
 geoprocessors. Hunt et al.~\cite{hunt2024csb} report that the 2018--2024 CONUS
@@ -82,10 +85,8 @@ build ``took about five days using a 96-core AWS workstation,'' with
 ``a majority of the processing time \dots\ spent on the
 dissolve/elimination step (ArcGIS Pro eliminate function)''. They
 further note that ``absent incrementally increasing the selection size,
-the tool often fails or takes days.'' The compute envelope and the
-dependency on a commercial GIS license together place an annual
-CONUS rebuild out of reach for most state-agency, academic, and
-non-profit users.
+the tool often fails or takes days.'' The reported compute requirement and
+commercial license restrict who can rebuild the national product each year.
 
 We rebuild the pipeline end-to-end in open-source tooling, target a
 single-node CPU machine of the type already common in federal HPC
@@ -94,52 +95,49 @@ ground truth. We do not time ArcPy on the same hardware because we do
 not have an ArcGIS~Pro license; runtime comparisons therefore use the
 published USDA ArcPy runtime reported for the same public reference
 workflow~\cite{hunt2024csb,usda_csb_repo}.
-Our contributions are:
+The paper makes five contributions:
 
 \begin{itemize}
     \item A \texttt{uint64} bit-packed CDL combine that replaces ArcGIS's
           iterative raster overlay with a single \texttt{numpy.bitwise\_or}
           per year (\cref{sec:method-combine}). We document a base-300
           \texttt{int64} encoding which silently overflowed and inflated
-          non-Iowa cropland area by $\sim$17\%; the bit-packed form is
+          non-Iowa cropland area by approximately 17\%; the bit-packed form is
           exact.
     \item A raster-side reformulation of \textsc{Eliminate(LENGTH)} as
           connected-component labelling, exact pixel-edge adjacency
           counting, and union-find merging, with a single polygonize call
           at the end (\cref{sec:method-eliminate}). The step runs in
-          $0.43\,\text{s}$ on a $2500^2$ Iowa tile, versus a SedonaDB
-          baseline that crashed at the production $5000^2$ size.
-    \item A \emph{same-combo dissolve} pass (\cref{sec:method-dissolve})
-          that union-finds class-matched adjacent labels left orphaned
-          by the longest-edge tiebreak in eliminate.
+          $0.43\,\text{s}$ on a $2500^2$ Iowa tile; a SedonaDB polygon-side
+          baseline crashes at the production $5000^2$ size. A final
+          same-combo pass merges class-matched adjacent labels
+          (\cref{sec:method-dissolve}).
     \item An exact pairwise inclusion--exclusion estimator for IoU
           between two polygon coverages (\cref{sec:val-method}) that
           parallelises the spatial join in DuckDB and finishes the
           densest parity tile in 25~s, versus $\geq 10$~min for the
           natural \texttt{unary\_union}-then-intersect formulation that
           dispatches single-threaded GEOS.
-    \item A cloud-native distribution: GeoParquet replaces the zipped
+    \item GeoParquet and PMTiles distributions. GeoParquet replaces the zipped
           ESRI File Geodatabase that USDA currently ships, polygonization
           stays in Apache Arrow throughout the pipeline via the
           \textsc{contourrs} library~\cite{contourrs}, and the national
-          coverage is published as a single PMTiles archive that
-          consumers can range-fetch by area of interest from cloud
-          storage---no full-CONUS download required to inspect a county.
+          coverage can be packaged as one range-addressable PMTiles archive
+          (\cref{sec:method-cloud}).
     \item A measured comparison against the USDA reference: 25.2~min wall
-          and $\sim$\$2 of AWS spot compute for a CONUS rebuild, mean IoU
-          0.846 across 16 diverse tiles, with the source pipeline released
-          under Apache-2.0.
+          time, \$0.38 of modeled AWS Spot compute at the 15 July 2026
+          snapshot, mean IoU 0.846 across 16 diverse tiles, and source code
+          available under Apache-2.0 (\cref{sec:results}).
 \end{itemize}
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figures/hero_conus.pdf}
 \caption{\textbf{CONUS Crop Sequence Boundaries.} 15.30~M polygons,
-2018--2025 CDL combine, generated end-to-end on a single 32-core node
-in 25.2 minutes from CDL rasters and an Overture-derived road/rail
-mask. Inset: visual diff against USDA CSB1825 over an Iowa tile;
-shared boundaries in grey, ours-only in blue, USDA-only in red. Median
-acreage parity within 2\%.}
+2018--2025 CDL combine, generated on a single 32-core node in 25.2~min
+from CDL rasters and an Overture-derived road and rail mask. The inset
+compares an Iowa tile with USDA CSB1825: shared boundaries are grey,
+ours-only boundaries are blue, and USDA-only boundaries are red.}
 \label{fig:hero}
 \end{figure}
 
@@ -147,30 +145,25 @@ acreage parity within 2\%.}
 \section{The USDA Reference Implementation}
 \label{sec:usda}
 
-The CSB algorithm operates on a stack of $N$ years of CDL rasters.
-Following the public ArcPy
-implementation~\cite{usda_csb_repo,hunt2024csb}, the pipeline executes:
-(i)~\texttt{arcpy.gp.Combine\_sa} to produce a raster whose values
-enumerate unique $N$-tuples of CDL classes; (ii)~\texttt{RasterToPolygon}
-to vectorize the combine raster; (iii)~\texttt{JoinField} to attach
-the per-year CDL attributes; (iv)~\texttt{Eliminate} executed in four
-ascending area passes ($\SI{100}{\meter\squared}$,
-$\SI{1000}{\meter\squared}$, two passes at
-$\SI{10000}{\meter\squared}$), each absorbing each below-threshold polygon
-into the adjacent polygon with which it shares the longest boundary
-(\textsc{LENGTH} mode); (v)~\texttt{cartography.SimplifyPolygon} with
-\textsc{BEND\_SIMPLIFY} at 60~m to produce cartographically smooth output
-while preserving topology between neighbours; (vi)~a spatial join under
-\textsc{LARGEST\_OVERLAP} to attach county/ASD/state attributes from
-TIGER and the NASS agricultural statistics districts; and (vii)~per-state
-splitting.
+The CSB algorithm operates on $N$ annual CDL rasters. The public ArcPy
+implementation first uses \texttt{arcpy.gp.Combine\_sa} to enumerate unique
+$N$-tuples of CDL classes, then vectorizes the combined raster and attaches
+the annual attributes~\cite{hunt2024csb,usda_csb_repo}. Four
+\texttt{Eliminate} passes absorb polygons below
+$\SI{100}{\meter\squared}$, $\SI{1000}{\meter\squared}$, and twice
+$\SI{10000}{\meter\squared}$ into the neighbor with the longest shared
+boundary. Next, \texttt{cartography.SimplifyPolygon} applies
+\textsc{BEND\_SIMPLIFY} at 60~m while preserving shared-edge topology. A
+\textsc{LARGEST\_OVERLAP} spatial join attaches county, agricultural
+statistics district (ASD), and state attributes before the output is split
+by state.
 
 The dominant cost is step~(iv). Our profiling of an in-house port that
 re-implemented elimination as polygon-side cross-joins under
 SedonaDB~\cite{yu2019sedona} confirms the diagnosis: at the production
 $5000^2$-pixel tile size the WKB blob array exceeds 2~GB and Arrow's
-\texttt{int32} offsets overflow, crashing the run. Polygon-side
-elimination is the wrong layer of representation.
+\texttt{int32} offsets overflow, crashing the run. We therefore perform
+elimination on raster labels before polygonization.
 
 %-----------------------------------------------------------------------
 \section{Method}
@@ -182,12 +175,11 @@ that differs materially from the ArcPy reference.
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figures/pipeline.pdf}
-\caption{\textbf{Pipeline.} Phase~1 (per-tile, parallel) reads the
-8 yr CDL stack, packs into \texttt{uint64}, labels connected components,
-runs four raster-side elimination passes, then polygonizes once.
-Phase~2 (streaming) attaches county/ASD/state attributes, computes
-CSBID/CSBACRES, and splits per state. The two phases share a streaming
-queue rather than a global barrier.}
+\caption{\textbf{Pipeline.} Parallel phase~1 reads each eight-year CDL tile,
+packs its classes into \texttt{uint64}, labels connected components, runs four
+raster-side elimination passes, and polygonizes once. Streaming phase~2
+attaches county, ASD, and state attributes; computes CSBID and CSBACRES; and
+partitions the output by state.}
 \label{fig:pipeline}
 \end{figure}
 
@@ -204,47 +196,44 @@ encode
 c(\mathbf{x}) \;=\; \bigvee_{y=1}^{8} \bigl(\,\text{CDL}_y(\mathbf{x}) \ll 8(y-1)\bigr),
 \]
 
-implemented as a single \texttt{numpy.bitwise\_or} per year. The
-combine raster is consumed downstream as an opaque uint64 key for
-labelling, and the per-year CDL attributes
-$\text{CDL}_y = (c \gg 8(y-1)) \,\&\, \mathtt{0xFF}$ are recovered by
-shifting at polygonize time. This eliminates the post-hoc
-zonal-statistics pass over eight national rasters ($\sim$15~GB each)
+implemented as a single \texttt{numpy.bitwise\_or} per year. Downstream stages
+use the combined raster as an opaque \texttt{uint64} key for labelling. We
+recover each annual attribute as
+$\text{CDL}_y = (c \gg 8(y-1)) \,\&\, \mathtt{0xFF}$ during polygonization.
+This encoding eliminates the post-hoc
+zonal-statistics pass over eight national rasters (approximately 15~GB each)
 that the reference pipeline performs through \texttt{JoinField}, which
 in our earlier port dominated total wall and triggered
 \textsc{exactextract} segfaults on tiles with $>$190k features.
 
-We note one prior pitfall worth flagging for re-implementers: an
-earlier version used base-$300$ \texttt{int64} encoding,
+An earlier version used base-$300$ \texttt{int64} encoding,
 $c = \sum_y \text{CDL}_y \cdot 300^{y-1}$. Although $300^7 \approx
 2.19 \times 10^{17}$ fits in \texttt{int64}, the multiplication by
 the year-8 class can reach $254 \cdot 300^7 \approx 5.55 \times 10^{19}$,
-which overflows \texttt{int64} silently in NumPy. The artefact was
-not visible on Iowa---which is dominated by CDL classes 1 (corn) and 5
-(soy), keeping the running sum small---but produced $\sim$17\% excess
-cropland area in regions with higher CDL codes. Bit-packing avoids the
-class altogether.
+which overflows \texttt{int64} silently in NumPy. Iowa did not expose the
+overflow because CDL classes 1 (corn) and 5 (soybeans) dominate its pixels and
+keep the running sum small. Regions with higher CDL codes had approximately 17\%
+excess cropland area. Bit-packing removes this overflow mode.
 
 \subsection{Raster-side \textsc{Eliminate(LENGTH)}}
 \label{sec:method-eliminate}
 
-The semantics of ArcGIS's \texttt{Eliminate} with the
-\textsc{LENGTH} option are: for every polygon below an area threshold,
-merge it into the adjacent polygon with which it shares the longest
-boundary. We observe that, prior to vectorization, the same operation
-can be executed on the label raster, with shared boundary lengths
-recovered as exact axis-aligned pixel-edge counts.
+ArcGIS \texttt{Eliminate} in \textsc{LENGTH} mode merges each polygon below an
+area threshold into the neighbor with the longest shared boundary. Before
+vectorization, pixel-edge counts provide these shared boundary lengths
+directly on the label raster.
 
 Let $L \in \mathbb{Z}^{H \times W}$ be the connected-component
 labelling of the masked combine raster (\textsc{scikit-image}'s
-\texttt{label} with 4-connectivity). Define the adjacency multiset
+\texttt{label} with 4-connectivity)~\cite{vanderwalt2014scikit}. Define the
+adjacency multiset
 
 \[
 A(\ell, \ell') \;=\; \bigl|\{(\mathbf{x}, \mathbf{x}') :
    L(\mathbf{x})=\ell,\, L(\mathbf{x}')=\ell',\, \mathbf{x}'\!-\!\mathbf{x} \in \{e_1, e_2\}\}\bigr|,
 \]
 
-i.e.\ the number of horizontal and vertical pixel-edge crossings between
+the number of horizontal and vertical pixel-edge crossings between
 labels $\ell$ and $\ell'$. With pixel pitch $\Delta = 30$~m, the shared
 boundary length in metres is $\Delta \cdot A(\ell, \ell')$. We compute
 $A$ in a single pass over $L$ as two NumPy slice differences,
@@ -280,10 +269,10 @@ that took 17.6~s at $2500^2$ and crashed at $5000^2$
 
 \begin{table}[t]
 \centering
-\caption{\textbf{Elimination wall, Iowa Q30 single tile.} Legacy is
-SedonaDB polygon-side cross-join under \textsc{LENGTH} semantics. Raster
-is the proposed adjacency-graph formulation. End-to-end is the full
-polygonize stage including I/O and simplification.}
+\caption{\textbf{Elimination wall time on one Iowa Q30 tile.} The legacy
+implementation uses a SedonaDB polygon-side cross-join; the raster
+implementation uses the adjacency graph. End-to-end time includes I/O,
+polygonization, and simplification.}
 \label{tab:eliminate}
 \small
 \begin{tabular}{lccc}
@@ -301,7 +290,8 @@ end-to-end, raster  & 0.97 s & 4.92 s  & 18.5 s \\
 \subsection{Same-combo dissolve}
 \label{sec:method-dissolve}
 
-\textsc{Eliminate} merges sub-MMU polygons but does not merge
+\textsc{Eliminate} merges polygons below the minimum mapping unit (MMU) but
+does not merge
 above-threshold neighbours that share an identical CDL sequence. After
 elimination we observe label pairs $(\ell, \ell')$ with
 $\text{area}(\ell), \text{area}(\ell') \geq \text{MMU}$,
@@ -310,24 +300,23 @@ $A(\ell, \ell') > 0$, and $c(\ell) = c(\ell')$, where $c$ is the
 correspond to spatially adjacent fields with identical 8-year crop
 histories and are aggregated into single MultiPolygons by the USDA
 reference. We add a fifth pass that union-finds all such pairs over
-the post-elimination label graph and rewrites $L$ accordingly. In
-practice the four eliminate passes absorb the vast majority of
-class-matched adjacencies on their own (\cref{sec:results-ablation}
-shows the pass is bit-identical on Iowa I15); we retain it as a safety
-net for tiles where the longest-shared-edge tiebreak leaves orphans.
+the post-elimination label graph and rewrites $L$ accordingly. On Iowa I15,
+the four elimination passes already absorb every class-matched adjacency,
+and the additional pass leaves the output unchanged
+(\cref{sec:results-ablation}). We retain the pass for tiles where the
+longest-shared-edge tiebreak leaves class-matched pairs.
 
 \subsection{Coverage-aware simplification}
 \label{sec:method-simplify}
 
-We replace per-polygon Douglas--Peucker simplification with
-\textsc{shapely}'s \texttt{coverage\_simplify} at 30~m tolerance and
+We replace per-polygon Douglas--Peucker simplification with Shapely's
+\texttt{coverage\_simplify} at 30~m tolerance and
 \texttt{simplify\_boundary=True}~\cite{shapely}. The function applies a
-single simplification to each shared edge of a polygon coverage, so
-neighbours that share a boundary remain topologically consistent
-afterwards. This is the open-source analogue of ArcGIS's
-\textsc{BEND\_SIMPLIFY}~\cite{wang1998bend}: it preserves shared edges
-exactly once rather than twice, eliminating the seam artefacts
-otherwise visible after independent simplification.
+single simplification to each shared edge, preserving consistency between
+neighboring polygons. ArcGIS \textsc{BEND\_SIMPLIFY} provides the analogous
+coverage-aware operation~\cite{wang1998bend}. Independent per-polygon
+simplification instead processes each shared edge twice and can introduce
+seams.
 
 \subsection{Postprocessing}
 \label{sec:method-postprocess}
@@ -350,65 +339,54 @@ SELECT * FROM (
 ) WHERE rn = 1;
 \end{verbatim}
 
-CSBID/CSBACRES/INSIDE\_X/Y are computed in the same query. Per-state
-GeoParquet outputs are produced via a partitioned write keyed on
-STATEFIPS. The CDL$_y$ columns are not recomputed by zonal statistics:
-they are unpacked from the \texttt{uint64} combine key carried through
-phase~1.
+The same query computes CSBID, CSBACRES, INSIDE\_X, and INSIDE\_Y. A
+partitioned write keyed by STATEFIPS produces the state GeoParquet files. We
+unpack the CDL$_y$ columns from the \texttt{uint64} key carried through
+phase~1 instead of recomputing them with zonal statistics.
 
 \subsection{Streaming pipeline}
 \label{sec:method-streaming}
 
-A two-phase driver previously synchronised on a global barrier between
-phase~1 (polygonize) and phase~2 (postprocess), starving cores during
-the join. We replace the barrier with a bounded
-\texttt{multiprocessing.Queue}: each phase~1 worker enqueues completed
-tile parquets, and a phase~2 pool dequeues and processes them as they
-arrive. On a 32-core node the streaming driver removes a 3-minute idle
-window at the end of phase~1.
+A two-phase driver originally synchronized globally between phase~1
+(polygonize) and phase~2 (postprocess), leaving cores idle during the join. A
+bounded \texttt{multiprocessing.Queue} now connects the phases: each phase~1
+worker enqueues completed tile files, and a phase~2 pool processes them as
+they arrive. On a 32-core node, this queue removes a 3-min idle period at the
+end of phase~1.
 
 \subsection{Cloud-native data products}
 \label{sec:method-cloud}
 
-USDA currently distributes CSB as a zipped ESRI File Geodatabase
-(\texttt{CSB1825.gdb.zip}, $\sim$8~GB), a closed binary format that
-forces consumers to install GDAL with FileGDB support and load the
-entire CONUS coverage to query a single county. We redesign the output
-side around three open columnar/tile formats:
+USDA distributes CSB as an approximately 8~GB zipped ESRI File Geodatabase.
+Querying a county requires FileGDB support and access to the national archive.
+We instead generate three open-format data products.
 
-\paragraph{Polygonization} Phase~1 polygonization itself stays in
-Apache Arrow. Rather than emitting Shapely geometries through a Python
-loop, we use \textsc{contourrs}~\cite{contourrs}, a pure-Rust raster
-polygonization library with Python bindings that emits Arrow arrays of
-WKB geometries directly. This keeps tiles in zero-copy Arrow tables
-from the labelled raster through to GeoParquet write, with no
-intermediate Python object allocation.
+\paragraph{Polygonization} Phase~1 uses \textsc{contourrs}~\cite{contourrs}, a
+Rust raster-polygonization library with Python bindings that emits Arrow
+arrays of WKB geometries. Tiles remain in Arrow tables from polygonization to
+the GeoParquet write, without intermediate Shapely objects.
 
-\paragraph{GeoParquet distribution} We distribute the national output
-as a single Hilbert-sorted GeoParquet~1.1 file with explicit
+\paragraph{GeoParquet distribution} The pipeline writes the national output
+as a Hilbert-sorted GeoParquet~1.1 file with explicit
 \texttt{xmin/ymin/xmax/ymax} bbox columns per row group
 (\cref{sec:val-method}). Consumers can read a county-sized AOI in
-sub-second time over HTTPS using DuckDB-spatial or any Arrow-aware
-client, without downloading the full 6~GB file---a workflow not
-expressible against the current \texttt{.gdb.zip} distribution.
+sub-second time with DuckDB-spatial without scanning the full 6~GB file.
 
-\paragraph{PMTiles archive} For visualisation we ship a single
-PMTiles archive~\cite{pmtiles} (2.7~GB for CONUS, zoom 4--12) built
-with \textsc{tippecanoe} and \textsc{tile-join}. PMTiles supports HTTP
-range requests, so a MapLibre GL JS~\cite{maplibre} client only
-fetches the tiles inside the user's current viewport. A farmer or
-extension agent inspecting their county pulls a few hundred kilobytes,
-not the full archive. The same archive serves as the cartographic
-backend for the project web viewer.
+\paragraph{PMTiles archive} The visualization stage builds one PMTiles
+archive~\cite{pmtiles} (2.7~GB for CONUS, zooms 4--12) with
+\textsc{tippecanoe} and \textsc{tile-join}~\cite{tippecanoe}. HTTP range
+requests allow a
+MapLibre GL JS~\cite{maplibre} client to fetch only the tiles in the current
+viewport.
 
 %-----------------------------------------------------------------------
 \section{Validation Methodology}
 \label{sec:val-method}
 
-We compare two polygon coverages, ours $\mathcal{O}$ and USDA
-$\mathcal{U}$, over a test bounding box $B$. Both coverages are
-non-overlapping by construction: each pixel of the cropland mask
-belongs to at most one polygon. Inclusion--exclusion gives
+We compare our polygon coverage $\mathcal{O}$ with USDA coverage
+$\mathcal{U}$ inside a test bounding box $B$. Each coverage is
+non-overlapping by construction, so each cropland-mask pixel belongs to at
+most one polygon. Inclusion--exclusion gives
 
 \begin{align}
 A_\mathcal{O}    &= \textstyle\sum_{o\in\mathcal{O}} \text{area}(o \cap B), \\
@@ -418,23 +396,19 @@ A_\cup           &= A_\mathcal{O} + A_\mathcal{U} - A_\cap, \\
 \text{IoU}(B)    &= A_\cap / A_\cup.
 \end{align}
 
-The pairwise intersection $A_\cap$ is a parallel spatial join in
-DuckDB-spatial~\cite{duckdbspatial}; no \texttt{ST\_Union\_Agg} is
-required. Compared to dissolving $\mathcal{O}$ and $\mathcal{U}$
-separately and intersecting unioned coverages---the natural
-formulation, which dispatches a single-threaded GEOS
-\texttt{unary\_union} over hundreds of thousands of polygons---this
-estimator is exact and reduces wall on the densest test tile from
-$>10$~min to 25~s.
+We compute $A_\cap$ with a parallel DuckDB-spatial join, without
+\texttt{ST\_Union\_Agg}~\cite{duckdbspatial}. Dissolving each coverage before
+intersection dispatches single-threaded GEOS \texttt{unary\_union} over
+hundreds of thousands of polygons. The pairwise estimator is exact and
+reduces wall time on the densest test tile from $>10$~min to 25~s.
 
 \paragraph{Bounding-box pushdown over GeoParquet}
-For per-tile parity we Hilbert-sort the input polygons and write them
-in 50k-row groups with explicit \texttt{xmin, ymin, xmax, ymax}
-columns. DuckDB's row-group statistics then prune $>$99\% of the file
-when filtering by a 150~km tile bounding box, reducing an Iowa
-extraction from minutes to 0.6~s. We apply the same one-time
-preparation to the USDA \texttt{CSB1825.gdb} after a conversion to
-GeoParquet via GDAL/OGR.
+For per-tile parity, we Hilbert-sort the polygons into 50{,}000-row groups
+with explicit \texttt{xmin}, \texttt{ymin}, \texttt{xmax}, and \texttt{ymax}
+columns. DuckDB row-group statistics prune $>$99\% of the file for a 150~km
+tile query, reducing an Iowa extraction from minutes to 0.6~s. We apply the
+same preparation to USDA \texttt{CSB1825.gdb} after conversion to GeoParquet
+with GDAL/OGR.
 
 %-----------------------------------------------------------------------
 \section{Results}
@@ -443,16 +417,15 @@ GeoParquet via GDAL/OGR.
 \subsection{Runtime and cost}
 \label{sec:results-runtime}
 
-We measure all stages on a single TGI~RAILS \texttt{cpu} partition
+We measure all stages on a single Taylor Geospatial RAILS \texttt{cpu} partition
 node (Intel Xeon Platinum 8468 Sapphire Rapids, 32 physical cores,
 256~GB RAM). \Cref{tab:runtime} reports the end-to-end CONUS rebuild.
 
 \begin{table}[t]
 \centering
-\caption{\textbf{End-to-end CONUS pipeline runtime, this work.}
-Single 32-core node, 256~GB. Polygonize processes 405 tiles after
-skipping 215 cropland-empty tiles. Postprocess emits one national and
-48 per-state GeoParquets.}
+\caption{\textbf{End-to-end CONUS runtime on one 32-core, 256~GB node.}
+Polygonization processes 405 tiles and skips 215 tiles without cropland.
+Postprocessing writes one national file and 48 state files.}
 \label{tab:runtime}
 \small
 \begin{tabular}{lcc}
@@ -470,11 +443,9 @@ Stage & Wall & Output \\
 \begin{table}[t]
 \centering
 \small
-\caption{\textbf{Per-stage wall-clock breakdown on a single I15 tile}
-($5000\times5000$\,px, 8 CDL years, single thread).
-\textsc{simplify\_shapely} (Shapely \texttt{coverage\_simplify}) and the
-uint64 bit-packed \textsc{combine\_unique} together account for two-thirds
-of per-tile wall; raster eliminate is only 8\,\% of the budget.}
+\caption{\textbf{Single-thread stage runtime on one $5000\times5000$-pixel I15
+tile.} Shapely \texttt{coverage\_simplify} accounts for 53.9\% of the
+24.87~s total; raster elimination accounts for 8.4\%.}
 \label{tab:stage-breakdown}
 \begin{tabular}{@{}lrr@{}}
 \toprule
@@ -504,31 +475,34 @@ Stage & Wall (s) & \% of tile \\
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figures/stage_breakdown.pdf}
-\caption{\textbf{Per-stage wall-clock budget on a $5000^2$ Iowa tile.}
-Coverage simplification dominates ($54\%$); the four-pass raster
-\textsc{eliminate} fits in $8\%$. Numbers match \cref{tab:stage-breakdown}.}
+\caption{\textbf{Stage runtime on a $5000^2$ Iowa tile.} Coverage
+simplification accounts for 53.9\% of wall time, compared with 8.4\% for the
+four raster-elimination passes.}
 \label{fig:stage-breakdown}
 \end{figure}
 
-The USDA ArcPy reference workflow described by Hunt et
+The USDA ArcPy workflow described by Hunt et
 al.~\cite{hunt2024csb,usda_csb_repo} reports 5 days on a 96-core AWS
-workstation: 11{,}520 core-hours. Our 25-min run on 32 cores is
-13.4 core-hours, an $860\times$ per-core reduction relative to that
-published runtime envelope and independent of instance pricing. At current EC2 rates, the USDA envelope on
-\texttt{c6i.24xlarge} on-demand (\$4.08/hr) costs \$489; ours on
-\texttt{m7i.16xlarge} spot (\$1.50/hr) costs \$0.63. We use spot
-because the pipeline tolerates restarts at tile granularity; on
-on-demand the same instance is \$3.06/hr, giving \$1.28 and a
-$382\times$ cost reduction. \Cref{tab:cost} reports both. Including
-the optional PMTiles tile build (16~min on \texttt{r7i.24xlarge}) and
-the parity sweep, total cloud spend on spot is \$2.00.
+workstation, or 11{,}520 core-hours. Our 25-min run on 32 cores uses 13.4
+core-hours. Hunt et al.\ do not report the EC2 instance, operating system,
+purchase model, or AWS bill. For an illustrative current public-list estimate,
+a 96-vCPU \texttt{c6i.24xlarge} running license-included Windows costs
+\$8.496/hr on demand, or \$1{,}020 for 120~hr. Our 25-min run maps to
+\$1.35 on a Linux \texttt{m7i.16xlarge} on demand or \$0.38 at the 15 July
+2026 lowest regional Spot snapshot~\cite{aws_ec2_pricing,aws_spot_pricing}.
+Including the
+optional PMTiles and parity stages raises the Spot estimate to \$0.97. These
+are pricing models, not measured cloud bills. ArcGIS \texttt{Eliminate}
+requires an Advanced license~\cite{esri_eliminate}; effective government and
+enterprise pricing varies.
 
 \begin{table}[t]
 \centering
-\caption{\textbf{Annual CONUS rebuild: published USDA reference vs.\ this work.}
-USDA wall time from the ArcPy workflow reported by Hunt et
-al.~\cite{hunt2024csb}; current EC2 on-demand pricing
-\cite{aws_ec2_pricing} for the cheapest 96-vCPU Sapphire Rapids match.}
+\caption{\textbf{Published USDA runtime and measured open-source runtime.}
+The USDA wall time comes from Hunt et al.~\cite{hunt2024csb}. Cost rows are
+illustrative current public-list
+equivalents~\cite{aws_ec2_pricing,aws_spot_pricing}, not
+measured bills. Hardware, operating systems, and pricing modes differ.}
 \label{tab:cost}
 \small
 \begin{tabular}{lcc}
@@ -538,56 +512,35 @@ al.~\cite{hunt2024csb}; current EC2 on-demand pricing
 Wall          & 120 hr                   & 0.42 hr \\
 Cores         & 96 (AWS)                 & 32 \\
 Core-hours    & 11{,}520                 & 13.4 \\
-EC2 on-demand & \$489                    & \$1.28 \\
-EC2 spot      & ---                      & \$0.63 \\
-GIS license   & ArcGIS Pro \$700/yr      & \$0 \\
+EC2 on-demand & \$1{,}020 (Windows)       & \$1.35 (Linux) \\
+EC2 spot      & \$579 (Windows)           & \$0.38 (Linux) \\
+Required GIS tier & ArcGIS Pro Advanced   & None \\
 Output        & $<$20 M polys            & 15.30 M polys \\
 Wall speedup  & ---                      & $\mathbf{287\times}$ \\
-Per-core      & ---                      & $\mathbf{860\times}$ \\
-Cost (on-demand) & ---                   & $\mathbf{382\times}$ \\
+Core-hour ratio & ---                    & $\mathbf{860\times}$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\paragraph{Interpreting the 287$\times$ end-to-end runtime ratio}
-We cannot directly time the ArcPy reference end-to-end on our hardware
-because ArcPy is not licensable in our environment. The comparison
-therefore uses the public USDA runtime and pipeline description rather
-than a same-hardware rerun. The attribution below is bounded by the
-measurements we \emph{can} take and should be read as ``where time goes
-in our pipeline'' rather than ``where USDA's pipeline spent its five
-days.'' First, USDA reports 96 cores against our 32, so a naive hardware
-adjustment gives a $32/96 \approx 0.33\times$ handicap on our side; the
-per-core ratio we still need to explain is therefore $287 \times 96/32
-\approx 861\times$. The dominant per-core contribution is replacing the
-polygon-side cross-join eliminate with a 4-pass raster eliminate:
-\cref{tab:eliminate} shows
-$17.58\,\text{s}\to 0.43\,\text{s}$ on a $2500^2$ tile, a $\sim$41$\times$
-step-level win that compounds super-linearly at CONUS scale because the
-legacy step is super-linear in polygon count~\cite{hunt2024csb}. The
-\texttt{uint64} bit-pack avoids running zonal statistics across eight
-national CDL rasters, which dominated USDA's earlier attempt; combined
-with streaming I/O it removes a $\sim$3\,min idle window we observed
-when chaining stages na\"{\i}vely. Finally, \texttt{coverage\_simplify}
-($53.9\%$ of our remaining budget, \cref{tab:stage-breakdown}) replaces
-per-polygon Douglas--Peucker with a single shared-edge pass, eliminating
-the redundant boundary work that scales with neighbour count in the
-legacy pipeline. The residual gap between our $\sim$41$\times$ step-level
-measurement and the $861\times$ per-core headline is therefore
-consistent with super-linear scaling of the legacy eliminate at CONUS
-polygon counts ($\sim$15M) plus the removal of the zonal-statistics and
-per-polygon-simplify passes that we cannot time but that USDA's
-documentation identifies as their bottlenecks.
+\paragraph{Scope of the runtime comparison}
+We cannot run the ArcPy workflow on the same hardware because our environment
+does not have an ArcGIS~Pro license. The $287\times$ wall-clock and
+$860\times$ core-hour ratios therefore compare our measurement with the
+published USDA runtime; they do not isolate the effects of hardware,
+software, or implementation. The controlled comparison in this paper is the
+Iowa tile ablation in \cref{tab:eliminate}: raster elimination takes
+0.43~s, compared with 17.58~s for our SedonaDB polygon-side implementation on
+the same $2500^2$ tile. Our stage profile further shows that coverage
+simplification, not elimination, is now the largest measured cost
+(\cref{tab:stage-breakdown}).
 
 \subsection{Parity vs.\ USDA CSB1825}
 \label{sec:results-parity}
 
-We evaluate parity on 16 geospatially diverse $5000^2$-pixel CONUS
-tiles spanning corn-belt, cotton, peanut, wheat, sugarcane, mixed,
-and irrigated-arid regimes. \Cref{tab:parity-summary} reports the
-distribution of per-tile IoU and acreage parity;
-\cref{tab:parity-detail} reports the six headline-region values from
-our cross-region sweep.
+We evaluate parity on 16 $5000^2$-pixel CONUS tiles spanning corn-belt,
+cotton, peanut, wheat, sugarcane, mixed-crop, and irrigated-arid regions.
+\Cref{tab:parity-summary} summarizes per-tile IoU and acreage parity, and
+\cref{tab:parity-detail} reports six regional results.
 
 \begin{table}[t]
 \centering
@@ -613,11 +566,11 @@ acres ratio 0.946, poly ratio 0.958).
 
 \begin{table}[t]
 \centering
-\caption{\textbf{Per-region parity, six headline tiles.} Each tile is a
-$5000^2$-pixel ($150\,\text{km} \times 150\,\text{km}$) CONUS extract evaluated against
-\texttt{CSB1825.gdb}. Acres reported in the original USDA units.}
+\caption{\textbf{Parity for six regional tiles.} Each tile covers
+$5000^2$ pixels ($150\,\text{km} \times 150\,\text{km}$) and is evaluated
+against \texttt{CSB1825.gdb}. Acreage uses the USDA units.}
 \label{tab:parity-detail}
-\small
+\footnotesize
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{lcccccc}
 \toprule
@@ -636,41 +589,34 @@ Wisconsin mixed (F17)       & 141{,}932 & 118{,}292 & 1.20 & 3{,}252{,}117 & 3{,
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figures/per_tile_iou.pdf}
-\caption{\textbf{Per-tile parity, 16 CONUS tiles sorted by IoU.}
-Bars: IoU; circles: ours/USDA acres ratio; dashed line at 1.0 marks
-acreage parity, dotted line marks the 16-tile mean IoU. The three
-sparse-cropland tiles (GA peanut, central TX cotton, CA Central Valley)
-sit visibly below the cluster.}
+\caption{\textbf{Parity over 16 CONUS tiles, sorted by IoU.} Bars show IoU,
+and circles show the ours-to-USDA acreage ratio. The dashed line marks equal
+acreage; the dotted line marks mean IoU.}
 \label{fig:per-tile-iou}
 \end{figure}
 
 Nine of the sixteen tiles clear $\text{IoU} \geq 0.89$. The three
 lowest-IoU tiles are GA peanut (0.543), TX cotton (0.690), and CA
-Central Valley (0.771). All three are sparse-cropland regions: the
-denominator $A_\cup$ is small, so absolute boundary disagreements drive
-a large relative IoU drop. Smallholder field geometry in the
-Texas--Georgia peanut belt and the irrigated patchwork of California's
-Central Valley are dominated by sub-hectare boundaries on which
-simplification tolerance interacts with the cropland-mask threshold:
-a single missed pixel along a 30~m field edge can split a polygon
-that USDA retains as a unit, or vice-versa. Adopting USDA's road/rail
+Central Valley (0.771). All three contain less cropland than the high-IoU
+tiles, so a fixed area of disagreement produces a larger IoU change. These
+regions also contain many small fields for which the 30~m raster grid,
+cropland-mask threshold, and simplification tolerance affect the resulting
+boundaries. A one-pixel change along a field edge can split a polygon that
+USDA retains as one unit, or conversely merge two units. Adopting USDA's road
+and rail
 mask via Overture Maps~\cite{overture} (already integrated in our
 production runs through \texttt{csb roads-prep} and the
 \texttt{--roads-mask} flag) closes a portion of the gap on
-mid-density tiles but does not lift these three sparse-cropland
-outliers, which are dominated by per-pixel boundary disagreements
-rather than missing linear features.
+mid-density tiles but does not raise the three lowest tile scores. Their
+visual differences are concentrated along field boundaries rather than in
+large connected regions.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figures/bottom3_montage.pdf}
-\caption{\textbf{Visual diff at the three lowest-IoU tiles.} For each
-$5000^2$-pixel tile, agreement is grey, ours-only is blue, USDA-only
-is red. The disagreement pattern is dominated by sub-hectare boundary
-displacement and per-pixel mask differences, not large connected
-regions where one side claims cropland and the other does not---the
-denominator $A_\cup$ is small in these sparse-cropland tiles, so even
-small absolute disagreements drive a large relative IoU drop.}
+\caption{\textbf{Differences for the three lowest-IoU tiles.} Agreement is
+grey, ours-only coverage is blue, and USDA-only coverage is red. Most
+differences follow field edges rather than large connected regions.}
 \label{fig:bottom3-montage}
 \end{figure}
 
@@ -686,8 +632,8 @@ mask (\emph{W-mask}), plus the leading crop-vs-crop confusion.
 
 \begin{table}[t]
 \centering
-\caption{Per-class agreement between our CONUS pipeline and USDA
-CSB1825 for 2024, for the 15 largest CDL classes by USDA acreage.
+\caption{\textbf{Per-class agreement with USDA CSB1825 for 2024.} The table
+reports the 15 largest CDL classes by USDA acreage.
 \emph{Agree} is the share of USDA acreage for the class that our
 pipeline labels with the same CDL code; \emph{W-mask} restricts the
 denominator to USDA pixels retained by our 2-year cropland mask.
@@ -721,20 +667,19 @@ Code & Class & USDA Mac & Agree & W-mask & Top off-diag. \\
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figures/per_class.pdf}
-\caption{\textbf{Within-mask per-class agreement} for the 15 largest CDL
-classes. Bars colored by family; USDA acreage shown to the right of each
-bar (Mac = million acres). Dashed line marks the 0.846 mean IoU baseline.
-Commodity rotations cluster near 90\%; specialty/forage classes drop into
-the 60--85\% range.}
+\caption{\textbf{Within-mask agreement for the 15 largest CDL classes.}
+Bars are grouped by crop family; labels report USDA acreage in million acres
+(Mac). The dashed line shows the 84.6\% mean polygon-coverage IoU for
+orientation, but the two metrics have different denominators.}
 \label{fig:per-class}
 \end{figure}
 
-Per-class agreement is highest on the major commodity rotations: within
-USDA pixels retained by our 2-year cropland mask, corn (89.6\%),
-soybeans (90.1\%), winter wheat (89.5\%), and cotton (86.9\%) all exceed
-the 0.84 mean IoU reported at the polygon level, and their leading
-crop-vs-crop confusion is the expected corn--soybean swap ($\sim$6\%).
-Divergence concentrates in three families: hay/forage classes (Alfalfa,
+Per-class agreement is highest on the major commodity rotations. Within
+USDA pixels retained by our 2-year cropland mask, corn (89.6\%), soybeans
+(90.1\%), winter wheat (89.5\%), and cotton (86.9\%) have the highest
+agreement. The leading confusion for corn and soybeans is a corn--soybean
+swap (approximately 6\%). Divergence concentrates in three families: hay and forage
+classes (Alfalfa,
 Other Hay) where the mode-of-modes label flips between neighbouring
 years; small-grain rotations (Barley, Spring Wheat) that inter-confuse
 at 8--15\%; and specialty/double-crop classes (Peanuts, Rice, Dbl-Crop
@@ -743,7 +688,7 @@ acreage for every class is attributed to ``no-class'' in our output,
 reflecting the 2-year crop-frequency threshold dropping single-year
 cropped pixels and simplification eroding sub-acre fields.
 
-\subsection{Ablation: simplify tolerance and dissolve}
+\subsection{Simplification and dissolve ablation}
 \label{sec:results-ablation}
 
 We re-ran phase~1 on tile~I15 (Iowa corn belt, $5000^2$~px) with the
@@ -753,10 +698,10 @@ other settings fixed. \Cref{tab:ablation} reports the result.
 
 \begin{table}[t]
 \centering
-\caption{\textbf{Ablation on tile I15 (Iowa corn belt, $5000^2$~px).}
-$n$ is polygon count, ratio is ours/USDA, IoU computed over the I15
-bbox vs.\ \texttt{CSB1825.gdb}. This stale ablation table was generated
-from a separate I15 run and should be regenerated before submission.}
+\caption{\textbf{Ablation on the $5000^2$-pixel Iowa I15 tile.} The table
+reports polygon count, ratios relative to USDA, and IoU against
+\texttt{CSB1825.gdb}. These provisional values come from a separate I15 run
+and require regeneration before submission.}
 \label{tab:ablation}
 \small
 \begin{tabular}{lcccc}
@@ -771,72 +716,63 @@ no same-combo dissolve        & 178{,}834 & 1.70 & 1.002 & \textbf{0.905} \\
 \end{tabular}
 \end{table}
 
-Two observations. First, the simplify tolerance is the dominant parity
-knob: tightening from 120~m to 30~m raises IoU by 4 points and brings
-the acreage ratio from $0.96$ to $1.00$ at the cost of $\sim$12\% more
+In this tile, tightening the simplification tolerance from 120~m to 30~m
+raises IoU by 4 points and brings
+the acreage ratio from $0.96$ to $1.00$ at the cost of approximately 12\% more
 polygons. USDA's published \textsc{BEND\_SIMPLIFY} runs at 60~m; we set
 our default to 30~m (one CDL pixel) because the IoU gain is consistent
-across the 16-tile parity sweep and the polygon-count overhead is
-modest. Second, the same-combo dissolve produces \emph{bit-identical}
-output to the default on this tile: the four eliminate passes already
-absorb every class-matched adjacency. The pass is retained as a safety
-net for tiles where the longest-shared-edge tiebreak in eliminate
-leaves orphan class-matched pairs, but it is not load-bearing on Iowa.
+across the 16-tile parity sweep. On I15, this choice adds approximately 12\% more
+polygons than 120~m simplification. The same-combo dissolve produces
+\emph{bit-identical} output on this
+tile because the four elimination passes already absorb every class-matched
+adjacency. We retain the pass for tiles where the longest-shared-edge
+tiebreak leaves class-matched pairs, but this ablation provides evidence only
+for Iowa I15.
 
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figures/acres_scatter.pdf}
-\caption{\textbf{Per-tile acreage parity, 16 CONUS tiles.} Left:
-ours vs.\ USDA acres on a $1\!:\!1$ axis. Right: Bland--Altman of
-percent difference vs.\ mean acreage; mean offset $-6.0\%$ with
-$\pm 1.96\sigma$ band $\pm 16\%$ (median offset $-3.1\%$). The two
-leftmost tiles (GA peanut, central TX cotton) drive the spread;
-cropland-rich tiles cluster within $\pm 2\%$.}
+\caption{\textbf{Acreage parity over 16 CONUS tiles.} Left: ours versus USDA
+on a $1\!:\!1$ axis. Right: percent difference versus mean acreage. The mean
+offset is $-6.0\%$, the median is $-3.1\%$, and the $\pm1.96\sigma$ interval
+is $\pm16\%$.}
 \label{fig:acres-scatter}
 \end{figure}
+
+\FloatBarrier
 
 %-----------------------------------------------------------------------
 \section{Related Work}
 \label{sec:related}
 
 \paragraph{The Cropland Data Layer and CSB lineage}
-The Cropland Data Layer~\cite{boryan2011cdl} has been the foundational
-input for U.S.\ crop mapping for over a decade, and continues to evolve:
-recent work has focused on automating in-season CDL-like products at
-finer spatial resolution and without ground truth, using historical
-trusted-pixel sampling and multi-source Sentinel-2/Landsat
-imagery~\cite{li2024automatedcdl,zhang2022inseason}. The Crop Sequence
-Boundaries product~\cite{hunt2024iaos,hunt2024csb} sits downstream of
-the CDL and aggregates per-pixel labels into multi-year field-level
-polygons. CSB has been adopted by the NRCS Conservation Effects
-Assessment Project to validate rotation imputations from the
-Agricultural Policy Environmental eXtender model~\cite{nrcs_ccr_328},
-and is increasingly used in pesticide-exposure work as the only
-public, CONUS-scale source of crop-field polygons updated annually:
-Rodr{\'i}guez-Garc{\'i}a et al.~\cite{rodriguezgarcia2025csbeval} evaluate CSB
-field-boundary accuracy in California for Endangered Species Act
-overlap analyses, finding strong utility but documenting acreage
-overestimation for almonds, grapes, and cotton and an excess
-field-count, which motivates the present work's emphasis on
-quantitative parity against the USDA reference rather than visual
-similarity alone.
+The Cropland Data Layer~\cite{boryan2011cdl} is an established input for
+U.S.\ crop mapping. Recent work produces in-season CDL-like maps from
+historical trusted-pixel samples and multi-source Sentinel-2 and Landsat
+imagery~\cite{li2024automatedcdl,zhang2022inseason}. CSB aggregates these
+per-pixel classes into multi-year field-level
+polygons~\cite{hunt2024csb,hunt2024iaos}. The NRCS Conservation Effects
+Assessment
+Project uses CSB to validate rotation imputations from the Agricultural
+Policy Environmental eXtender model~\cite{nrcs_ccr_328}.
+Bribiesca-Rodriguez et al.~\cite{rodriguezgarcia2025csbeval} evaluate CSB
+boundaries for Endangered Species Act overlap analysis in California. They
+report acreage overestimation for almonds, grapes, and cotton, along with an
+excess field count. These findings motivate quantitative comparison with the
+USDA reference rather than visual comparison alone.
 
 \paragraph{Parallel polygon coverage and raster-to-vector at scale}
-A line of distributed-systems work has targeted CONUS-scale geospatial
+A line of distributed-systems work addresses large-scale geospatial
 processing on commodity clusters. GeoSpark and its successor Apache
 Sedona~\cite{yu2019sedona} extend Spark with spatial partitioners,
 indices, and join operators; GeoTrellis~\cite{geotrellis} provides a
 parallel raster engine on the JVM; and RasterFrames~\cite{rasterframes}
 brings raster tiles into Spark DataFrames. None of these target the
-specific raster-to-vector elimination workload that dominates CSB
-construction, and our experience replicating CSB in Sedona-style
-polygon-side cross-joins (\cref{sec:usda}) was that Arrow's
-\texttt{int32} WKB offsets bound polygon coverages well below the
-$5000^2$-pixel tile size used in production. At the raster level,
-GDAL's \texttt{Polygonize}~\cite{gdal} remains the standard pixel-edge
-walking algorithm; we exchange it for the Arrow-native
-\textsc{contourrs} implementation~\cite{contourrs} to keep tiles in
-columnar form across the pipeline.
+specific raster-to-vector elimination workload in CSB. In our Sedona
+polygon-side implementation (\cref{sec:usda}), Arrow's \texttt{int32} WKB
+offsets overflow below the $5000^2$-pixel production tile size. GDAL
+\texttt{Polygonize}~\cite{gdal} provides a pixel-edge walking algorithm; we
+use \textsc{contourrs}~\cite{contourrs} because it emits Arrow arrays.
 
 \paragraph{Polygon-coverage simplification}
 Per-polygon Douglas--Peucker simplification produces seam artefacts when
@@ -854,42 +790,29 @@ polygon coverage, an essential property for downstream join and
 acreage-summation workflows.
 
 \paragraph{Open-source replacements of commercial GIS}
-QGIS~\cite{qgis2025patterns} has matured into a credible
-desktop-GIS alternative to ArcGIS Desktop/Pro, with documented adoption
-by federal, municipal, and academic users; the recent \emph{Patterns}
-paper documents the project's two-decade governance and engineering
-trajectory. PostGIS~\cite{obe2021postgis} remains the canonical
-open-source spatial database. On the client/notebook side,
-GeoPandas~\cite{jordahl2020geopandas} brings spatial types into the
-pandas/Arrow ecosystem, and DuckDB-spatial~\cite{duckdbspatial} adds an
-embedded analytical SQL engine with GEOS-backed predicates and a GDAL
-I/O bridge, building on DuckDB's columnar
-runtime~\cite{raasveldt2019duckdb}. Our pipeline composes these
-projects in place of the ArcPy/ArcGIS-Pro stack used by Hunt et
-al.~\cite{hunt2024csb}; the goal is parity, not displacement.
+QGIS~\cite{qgis2025patterns} provides open-source desktop GIS and is used by
+federal, municipal, and academic organizations.
+PostGIS~\cite{obe2021postgis} provides an open-source spatial database, while
+GeoPandas~\cite{jordahl2020geopandas} adds spatial types to the pandas and
+Arrow ecosystem. DuckDB-spatial~\cite{duckdbspatial} combines DuckDB's
+columnar runtime~\cite{raasveldt2019duckdb} with GEOS predicates and GDAL I/O.
+Our pipeline uses these components in place of the ArcPy and ArcGIS~Pro stack
+described by Hunt et al.~\cite{hunt2024csb}.
 
 \paragraph{Cloud-native geospatial formats}
-The cloud-native geospatial movement has converged on a small set of
-formats designed for HTTP range-request access: Cloud-Optimized
+Several geospatial formats support HTTP range access: Cloud-Optimized
 GeoTIFF for rasters~\cite{ogc_cog}, GeoParquet for vector tables with
 columnar pruning~\cite{geoparquet,kelsey2023geoparquet}, FlatGeobuf for
 streaming feature reads~\cite{flatgeobuf}, STAC for asset
 discovery~\cite{stacspec}, and PMTiles for single-archive vector and
-raster tilesets~\cite{pmtiles}. Agricultural-tech adoption of these
-formats has accelerated as multi-petabyte CDL, Sentinel-2, and
-field-boundary archives have moved to object storage. We follow the
-same trajectory on the CSB output side: GeoParquet replaces the zipped
-ESRI File Geodatabase that USDA currently distributes, and PMTiles
-replaces the static MBTiles served by the USDA viewer, allowing a
-county-scale consumer to fetch hundreds of kilobytes rather than the
-full $\sim$8\,GB national bundle. Recent work on field-level
+raster tilesets~\cite{pmtiles}. Our CSB outputs use GeoParquet for
+analytical access and PMTiles for map display. Recent work on field-level
 boundary extraction from satellite imagery---ResUNet-style segmentation
 in heterogeneous landscapes~\cite{waldner2020deepedge} and transfer
 learning into smallholder regimes~\cite{wang2022smallholder}---is
-complementary: those methods produce field geometry from imagery
-directly, whereas CSB and our open-source rebuild aggregate an
-existing per-pixel classification into field-shaped polygons whose
-attributes encode multi-year crop history.
+complementary. Those methods infer field geometry from imagery, whereas CSB
+aggregates an existing per-pixel classification into polygons with
+multi-year crop-history attributes.
 
 %-----------------------------------------------------------------------
 \section{Limitations}
@@ -905,17 +828,14 @@ currency (Overture is community-edited and updated more frequently)
 and in coverage of unpaved farm tracks; quantifying their parity is
 left to future work.
 
-\paragraph{Eight-year horizon} The \texttt{uint64} bit-packing fits
-exactly $8 \cdot 8 = 64$~bits. Longer horizons require either a
-\texttt{uint128} extension (numpy via two \texttt{uint64} columns) or
-a hash-then-perfect-table approach, neither of which we have yet
-prototyped.
+\paragraph{Eight-year horizon} The \texttt{uint64} bit-packing fits exactly
+$8 \cdot 8 = 64$~bits. Longer horizons require multiple \texttt{uint64}
+words or an indexed lookup table. We have not implemented either approach.
 
-\paragraph{Tile-edge MultiPolygons} Fields straddling our $5000^2$
-processing tiles emerge as separate polygons. The USDA reference
-emits MultiPolygons for a small fraction of such cases. A
-post-pass that union-finds polygons sharing tile edges and identical
-combine keys is in development.
+\paragraph{Tile-edge reconciliation} Postprocessing unions touching polygons
+on opposite tile edges when their full CDL sequence matches. Small geometric
+gaps or classification disagreements prevent a merge, so some cross-tile
+fields can remain split relative to USDA.
 
 \paragraph{CONUS scope} The pipeline does not currently include
 Alaska or Hawaii, matching USDA's scope.
@@ -924,45 +844,49 @@ Alaska or Hawaii, matching USDA's scope.
 \section{Reproducibility}
 \label{sec:reproducibility}
 
-The pipeline is released under the Apache-2.0 licence on PyPI as
-\texttt{csb} (\url{https://github.com/isaaccorley/crop-sequence-boundaries-v2}).
-The full CONUS run is reproducible from a fresh clone with three
+The source code is available under the Apache-2.0 license in the
+\href{https://github.com/isaaccorley/crop-sequence-boundaries-v2}{project
+repository}. The project has not published a Python package release. After
+local installation, a full CONUS run uses three
 commands: \texttt{csb download 2018 2025}, \texttt{csb build-boundaries},
 and \texttt{csb run-all 2018 2025}. SLURM batch scripts for a 96-core
 HPC node and a 32-core spot instance are included under
-\texttt{examples/cluster/}. The 15.30\,M-polygon CONUS GeoParquet output and
-the 2.7\,GB PMTiles archive are distributed via Source Cooperative;
-the per-region parity sweep (\cref{tab:parity-summary,tab:parity-detail})
-and per-class confusion (\cref{tab:per-class}) are reproducible from
-the released artifacts using \texttt{csb parity --whole-conus
---per-class 2024}. All experiments in this paper used Python~3.12,
-\textsc{rasterio}~1.4, \textsc{shapely}~2.1, \textsc{DuckDB}~1.2 with
+\texttt{examples/cluster/}. A public 2.7~GB
+\href{https://source.coop/ftw/usda-csb}{2025 USDA CSB PMTiles archive} is
+available, but no versioned release of the 15.30~M-polygon GeoParquet exists
+yet. The parity and per-class evaluations therefore require locally generated
+output and the USDA CSB1825 reference.
+All experiments in this paper used Python~3.12,
+\textsc{rasterio}~1.4~\cite{rasterio}, \textsc{shapely}~2.1,
+\textsc{DuckDB}~1.2 with
 the spatial extension, \textsc{contourrs}~0.7, and \textsc{tippecanoe}~2.61.
 
 %-----------------------------------------------------------------------
 \section{Conclusion}
 
-We have rebuilt the USDA Crop Sequence Boundaries pipeline in pure open
-source, achieving a $287\times$ wall-clock and $860\times$ per-core
-reduction relative to the published USDA ArcPy runtime envelope at mean IoU 0.846
-across 16 diverse CONUS tiles. The dominant algorithmic levers are
+We rebuilt the USDA Crop Sequence Boundaries pipeline with open-source
+software. Relative to the published USDA ArcPy runtime envelope, the measured
+wall-clock and core-hour ratios are $287\times$ and $860\times$; this is not a
+same-hardware comparison. Mean IoU is 0.846 across 16 CONUS tiles. Key
+implementation changes include
 \texttt{uint64} bit-packing of the multi-year combine and a raster-side
 reformulation of \textsc{Eliminate(LENGTH)} as a label-graph union-find,
-the latter resolving the elimination bottleneck identified by
+which addresses the elimination bottleneck identified by
 Hunt et al.~\cite{hunt2024csb}. The pipeline runs on a single 32-core node at
-\$2 of AWS spot compute, requires no commercial GIS license, and
-produces outputs with USDA-identical schema. Source code is available
-on PyPI; the CONUS dataset and PMTiles archive are distributed via
-Source Cooperative.
+\$0.38 of modeled AWS Spot compute for the measured generation stages,
+requires no commercial GIS license, and produces outputs with USDA-identical
+schema. Source code is available in the project repository. The generated
+CONUS dataset has not received a versioned release; the 2025 USDA CSB PMTiles
+archive is public.
 
 \section*{Data and Code Availability}
 
-Source code is available at
-\url{https://github.com/isaaccorley/crop-sequence-boundaries-v2} under the
-Apache-2.0 licence. Generated GeoParquet and PMTiles artifacts are
-distributed through Source Cooperative and linked from the project release
-notes. The parity and per-class evaluation commands are included in the
-repository.
+Source code is available under the Apache-2.0 license in the
+\href{https://github.com/isaaccorley/crop-sequence-boundaries-v2}{project
+repository}. The preview PMTiles archive is public on
+\href{https://source.coop/ftw/usda-csb}{Source Cooperative}; the generated
+GeoParquet has not received a versioned release. The repository includes the
+parity and per-class evaluation code.
 
 \section*{Declaration of Competing Interest}
 

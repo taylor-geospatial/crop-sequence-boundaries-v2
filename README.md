@@ -1,4 +1,4 @@
-# csb — Crop Sequence Boundaries
+# csb: Crop Sequence Boundaries
 
 Open-source pipeline that turns USDA Cropland Data Layer rasters into
 field-level crop sequence boundary polygons. A drop-in replacement for the
@@ -6,10 +6,11 @@ official ArcPy CSB pipeline at
 [USDA-REE-NASS/crop-sequence-boundaries](https://github.com/USDA-REE-NASS/crop-sequence-boundaries):
 
 - **No ArcGIS license required.** Pure-Python + a few Rust/C extensions.
-- **~25 minutes** for the full 8-year CONUS rebuild on a single 32-core node
-    (USDA's published runtime: 5 days on a 96-core AWS workstation —
+- **~25 minutes** for the 8-year CONUS polygonize and postprocess stages on a
+    single 32-core node (USDA's published runtime: 5 days on a 96-core AWS workstation —
     [Hunt et al. 2024](https://journals.sagepub.com/doi/full/10.3233/SJI-230078)).
-- **~$2 of AWS spot compute** per CONUS run. See [PRICING.md](PRICING.md).
+- \*\*~$0.38 of modeled AWS spot compute** for those measured stages; ~$0.97
+    including the optional PMTiles and parity stages. See [PRICING.md](PRICING.md).
 - **USDA-identical output schema** (`CSBID`, `CSBYEARS`, `CSBACRES`,
     `CDL{year}`, `STATEFIPS`, `STATEASD`, `ASD`, `CNTY`, `CNTYFIPS`,
     `INSIDE_X/Y`, `Shape_Length`, `Shape_area`).
@@ -19,18 +20,14 @@ official ArcPy CSB pipeline at
 ## Install
 
 ```bash
-pip install csb
-```
-
-For development:
-
-```bash
 git clone https://github.com/isaaccorley/crop-sequence-boundaries-v2
 cd crop-sequence-boundaries-v2
 uv sync --all-extras
 ```
 
-The `csb` console script is installed automatically.
+The project has not published a Python release yet. The distribution name is
+`crop-sequence-boundaries`; the import package and console command are both
+`csb`. The shorter PyPI name belongs to an unrelated project.
 
 ## Quickstart
 
@@ -77,30 +74,15 @@ Two extra commands handle validation and serving:
 
 ## Configuration
 
-CSB ships with a default YAML config; override paths or thresholds via:
+Pipeline settings are CLI options with defaults in `src/csb/config.py`. Use
+`--help` on a command to see the complete set. For example:
 
 ```bash
-csb --config configs/conus.yaml run-all 2018 2025
-```
-
-```yaml
-# configs/conus.yaml
-global:
-  cpu_fraction: 0.95
-  min_cropland_years: 2
-
-paths:
-  output: data/output/conus
-  national_cdl: data/input/national_cdl
-  boundaries: data/input/boundaries/US48_ASD_CNTY_Albers.parquet
-
-polygonize:
-  phase1_workers: 16
-  phase2_workers: 16
-  tile_size: 5000
-  eliminate_thresholds: [100, 1000, 10000, 10000]   # matches USDA CSBElimination
-  min_polygon_area: 10000
-  simplify_tolerance: 60
+csb run-all 2018 2025 \
+    --output data/output/conus \
+    --cpu-fraction 0.95 \
+    --tile-size 5000 \
+    --simplify-tolerance 30
 ```
 
 ## Output schema
@@ -178,19 +160,17 @@ stage.
 
 ## Cost
 
-A full annual CONUS rebuild costs **~$1.15 to $2.00 of AWS spot compute**
-(plus near-zero storage on Cloudflare R2). Detailed pricing breakdown,
-hardware comparisons, and a side-by-side vs USDA's ArcGIS pipeline are in
+At the 15 July 2026 us-east-1 Spot snapshot, the measured processing stages
+map to **~$0.97 of compute**. One month of S3 storage brings the model to
+**~$1.09**. Assumptions and the public-list ArcGIS comparison are in
 [PRICING.md](PRICING.md).
 
 ## Data hosting
 
-Generated CSB datasets are published on **[Source Cooperative](https://source.coop)**
-under a public bucket. Source Coop offers fast HTTP range-request access
-(better than Zenodo for large geospatial archives) and a stable URL per
-release. Each archive corresponds to a `vX.Y.Z` GitHub Release on this
-repo — the GitHub release notes are the canonical changelog and the
-Source Cooperative bucket holds the GeoParquet + PMTiles artifacts.
+The 2025 USDA Crop Sequence Boundaries PMTiles are public on
+[Source Cooperative](https://source.coop/ftw/usda-csb). This project does not
+yet have a tagged dataset or GitHub release. Until then, build its GeoParquet
+outputs locally with the commands above.
 
 Cite the dataset via the [CITATION.cff](CITATION.cff) (software) and the
 technical report in [`paper/`](paper/) (methodology).

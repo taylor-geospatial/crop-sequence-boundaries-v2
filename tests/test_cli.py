@@ -1,7 +1,5 @@
 """Tests for csb.cli."""
 
-from __future__ import annotations
-
 from click.testing import CliRunner
 
 from csb.cli import main

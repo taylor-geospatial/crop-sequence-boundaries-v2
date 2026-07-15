@@ -9,15 +9,10 @@ ground truth) is gated on the ``CSB_HEAVY_E2E`` env var so it only runs
 on release tags / nightly.
 """
 
-from __future__ import annotations
-
 import os
 import shutil
-from typing import TYPE_CHECKING
+from pathlib import Path
 from unittest.mock import patch
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 import geopandas as gpd
 import numpy as np

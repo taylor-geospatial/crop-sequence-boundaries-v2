@@ -1,18 +1,13 @@
 """Tests for csb.io."""
 
-from __future__ import annotations
-
 import json
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 from shapely import Point, to_wkb
 
 from csb.io import write_geoparquet
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def test_write_geoparquet(tmp_path: Path) -> None:

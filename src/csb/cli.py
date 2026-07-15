@@ -1,7 +1,5 @@
 """Command-line entrypoint for the ``csb`` package."""
 
-from __future__ import annotations
-
 import json
 from pathlib import Path
 
@@ -226,17 +224,6 @@ def _polygonize_options(f):  # noqa: ANN001, ANN202 — Click decorator factory
             default=True,
             help="Toggle the same-combo dissolve pass (default on; off for ablation).",
         ),
-        click.option(
-            "--cdl-smooth-size",
-            type=int,
-            default=1,
-            show_default=True,
-            help="Size of the per-year CDL majority filter applied before "
-            "bit-packing. 1 = disabled. Tested 3 on Iowa I15: drops polygon "
-            "count slightly but per-field IoU vs USDA gets worse, because "
-            "the merges that smoothing produces are not the same merges "
-            "USDA's GEE preprocessing produces.",
-        ),
     ]
     for opt in reversed(flags):
         f = opt(f)
@@ -271,7 +258,6 @@ def polygonize(
     phase2_workers: int | None,
     roads_mask: str | None,
     same_combo_dissolve: bool,
-    cdl_smooth_size: int,
 ) -> None:
     """Combine multi-year CDL → label-eliminate → simplify → GeoParquet."""
     from csb.polygonize import run_polygonize
@@ -297,7 +283,6 @@ def polygonize(
         area=area,
         roads_mask=roads_mask,
         same_combo_dissolve=same_combo_dissolve,
-        cdl_smooth_size=cdl_smooth_size,
     )
 
 
@@ -392,7 +377,6 @@ def run_all(
     phase2_workers: int | None,
     roads_mask: str | None,
     same_combo_dissolve: bool,
-    cdl_smooth_size: int,
 ) -> None:
     """Run polygonize + postprocess back-to-back."""
     from csb.polygonize import run_polygonize
@@ -416,7 +400,6 @@ def run_all(
         phase2_workers=phase2_workers,
         roads_mask=roads_mask,
         same_combo_dissolve=same_combo_dissolve,
-        cdl_smooth_size=cdl_smooth_size,
     )
     run_postprocess(
         start_year=start_year,

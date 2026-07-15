@@ -36,7 +36,7 @@ csb pmtiles          # GeoParquet → FlatGeobuf → tippecanoe → .pmtiles
 | `parity.py`           | USDA ground-truth IoU validation                                                 |
 | `pmtiles.py`          | GeoParquet → FlatGeobuf → tippecanoe                                             |
 | `io.py`               | GeoParquet 1.1 writer (full PROJJSON CRS)                                        |
-| `config.py`           | YAML config + constants (`STATE_FIPS`, `BARREN_CODE`, …)                         |
+| `config.py`           | CLI defaults + constants (`STATE_FIPS`, `BARREN_CODE`, …)                        |
 | `utils.py`            | `polygonize` wrapper, `parallel_map`/`parallel_starmap`                          |
 
 ## Conventions
@@ -45,14 +45,14 @@ csb pmtiles          # GeoParquet → FlatGeobuf → tippecanoe → .pmtiles
 - Outputs are GeoParquet 1.1 with full-PROJJSON CRS metadata; the short
     `{id: {authority, code}}` form is rejected by pyproj 3.x and breaks
     geopandas / pyogrio / GDAL readers.
-- Parallel stages use `ProcessPoolExecutor` with `cpu_fraction` from config.
+- Parallel stages use `ProcessPoolExecutor` with `cpu_fraction` from the CLI/API.
 - Each stage is resumable — completed area tiles are skipped automatically.
 - Tests live in `tests/`; pytest with xdist available.
 - Lint/format: ruff (line-length 100); type-check: ty; pre-commit covers both
     plus mdformat and pyproject-fmt.
 - Commits follow Conventional Commits (`feat|fix|refactor|chore|docs|...`).
-- The bundled default config lives at `src/csb/_data/default.yaml` and is
-    resolved via `importlib.resources` so it travels with the wheel.
+- Defaults live in `src/csb/config.py`; each is exposed as a CLI option and a
+    public Python API keyword argument.
 
 ## Build & test
 

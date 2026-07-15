@@ -3,7 +3,7 @@ build-backend = "uv_build"
 requires = [ "uv-build>=0.9.3,<1" ]
 
 [project]
-name = "csb"
+name = "crop-sequence-boundaries"
 version = "0.1.0"
 description = "Open-source pipeline for USDA Crop Sequence Boundaries from Cropland Data Layer rasters."
 readme = "README.md"
@@ -37,6 +37,7 @@ dependencies = [
   "rasterio>=1,<2",
   "rich>=14,<15",
   "scikit-image>=0.24,<1",
+  "scipy>=1.14,<2",
   "shapely>=2,<3",
 ]
 urls.Homepage = "https://github.com/isaaccorley/crop-sequence-boundaries-v2"
@@ -53,6 +54,9 @@ dev = [
   "ruff>=0,<1",
   "ty>=0,<1",
 ]
+
+[tool.uv]
+build-backend.module-name = "csb"
 
 [tool.ruff]
 target-version = "py312"

@@ -23,7 +23,8 @@ Each script has placeholders to update:
 Override paths via env vars rather than editing the scripts in place:
 
 ```bash
-START_YEAR=2017 END_YEAR=2024 sbatch examples/cluster/conus_run.sbatch
+START_YEAR=2017 END_YEAR=2024 OUTPUT_ROOT=data/output/conus \
+    sbatch examples/cluster/conus_run.sbatch
 ```
 
 `build_pmtiles.sbatch` requires `tippecanoe` on PATH. Install via:

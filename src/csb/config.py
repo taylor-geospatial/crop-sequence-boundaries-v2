@@ -6,8 +6,6 @@ keyword argument on the public Python API and a corresponding ``--option``
 on the CLI.
 """
 
-from __future__ import annotations
-
 # ---------------------------------------------------------------------------
 # CDL semantics
 # ---------------------------------------------------------------------------

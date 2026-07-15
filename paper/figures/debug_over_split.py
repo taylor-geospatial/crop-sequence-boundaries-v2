@@ -84,7 +84,7 @@ def main() -> None:
     target = conn.execute("""
         SELECT uid, u_area, n_ours
         FROM per_usda
-        WHERE u_area BETWEEN 200000 AND 800000  -- 50–200 acre fields
+        WHERE u_area BETWEEN 200000 AND 800000  -- 50-200 acre fields
           AND n_ours >= 5
         ORDER BY n_ours DESC
         LIMIT 1
@@ -93,7 +93,9 @@ def main() -> None:
         print("no over-split sample found")
         return
     uid, u_area, n_ours = target
-    print(f"target: uid={uid}  u_area={u_area:.0f} m² ({u_area/4046.86:.1f} ac)  ours_count={n_ours}")
+    print(
+        f"target: uid={uid}  u_area={u_area:.0f} m² ({u_area / 4046.86:.1f} ac)  ours_count={n_ours}"
+    )
 
     # Pull the focus polygon + CSBID + combo
     u_row = conn.execute(f"""
@@ -101,6 +103,7 @@ def main() -> None:
                CDL2022, CDL2023, CDL2024, CDL2025, CSBID
         FROM usda WHERE uid={uid}
     """).fetchone()
+    assert u_row is not None
     u_geom = shapely.from_wkb(bytes(u_row[0]))
     usda_combo = list(u_row[1:9])
     csbid = u_row[9]
@@ -131,13 +134,15 @@ def main() -> None:
         combo_counts_inside[combo] = combo_counts_inside.get(combo, 0) + inter
         if i < 12:
             match = "= USDA" if combo == tuple(usda_combo) else " "
-            print(f"  {i:>2}   {inter / 4046.86:>10.2f}   {area / 4046.86:>10.2f}   {combo}  {match}")
+            print(
+                f"  {i:>2}   {inter / 4046.86:>10.2f}   {area / 4046.86:>10.2f}   {combo}  {match}"
+            )
 
-    print(f"\nintersection-area share by combo (top 8, fraction of focus polygon):")
+    print("\nintersection-area share by combo (top 8, fraction of focus polygon):")
     total_u = u_area
     for c, ia in sorted(combo_counts_inside.items(), key=lambda x: -x[1])[:8]:
         match = " == USDA" if c == tuple(usda_combo) else ""
-        print(f"  {ia/total_u*100:>5.1f}%  {c}{match}")
+        print(f"  {ia / total_u * 100:>5.1f}%  {c}{match}")
 
     # Also show all polygons in the bbox for the visualization (but report
     # combo distribution only for ones inside the USDA polygon)
@@ -158,20 +163,26 @@ def main() -> None:
     ours_paths = []
     for r in rows:
         g = shapely.from_wkb(bytes(r[0]))
-        for part in shapely.get_parts([g]):
-            if shapely.get_type_id(part) == 3 and not part.is_empty:
-                ours_paths.append(np.asarray(part.exterior.coords))
-    ax.add_collection(PolyCollection(ours_paths, facecolor="#3aa8ff",
-                                      edgecolor="#1f6bb0", lw=0.6, alpha=0.45))
-    u_paths = [np.asarray(p.exterior.coords)
-               for p in shapely.get_parts([u_geom])
-               if shapely.get_type_id(p) == 3 and not p.is_empty]
-    ax.add_collection(PolyCollection(u_paths, facecolor="none",
-                                      edgecolor="#c0392b", lw=1.6))
-    ax.set_xlim(bx[0], bx[2]); ax.set_ylim(bx[1], bx[3])
-    ax.set_aspect("equal"); ax.set_xticks([]); ax.set_yticks([])
-    ax.set_title(f"polygons (1× USDA, {n_ours} ours)\nUSDA combo {usda_combo}",
-                 fontsize=7.5)
+        ours_paths.extend(
+            np.asarray(part.exterior.coords)
+            for part in shapely.get_parts([g])
+            if shapely.get_type_id(part) == 3 and not part.is_empty
+        )
+    ax.add_collection(
+        PolyCollection(ours_paths, facecolor="#3aa8ff", edgecolor="#1f6bb0", lw=0.6, alpha=0.45)
+    )
+    u_paths = [
+        np.asarray(p.exterior.coords)
+        for p in shapely.get_parts([u_geom])
+        if shapely.get_type_id(p) == 3 and not p.is_empty
+    ]
+    ax.add_collection(PolyCollection(u_paths, facecolor="none", edgecolor="#c0392b", lw=1.6))
+    ax.set_xlim(bx[0], bx[2])
+    ax.set_ylim(bx[1], bx[3])
+    ax.set_aspect("equal")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_title(f"polygons (1x USDA, {n_ours} ours)\nUSDA combo {usda_combo}", fontsize=7.5)
 
     # 8 CDL year panels
     for i, year in enumerate(range(2018, 2026)):
@@ -179,27 +190,34 @@ def main() -> None:
         cdl_path = NATIONAL_CDL / str(year) / f"{year}_30m_cdls.tif"
         if not cdl_path.exists():
             ax.set_title(f"CDL {year} (missing)", fontsize=7.5)
-            ax.set_xticks([]); ax.set_yticks([])
+            ax.set_xticks([])
+            ax.set_yticks([])
             continue
         with rasterio.open(cdl_path) as src:
             window = rasterio.windows.from_bounds(*bx, transform=src.transform)
             data = src.read(1, window=window).astype(np.int16)
             wt = src.window_transform(window)
-        ax.imshow(data,
-                  extent=(wt.c, wt.c + data.shape[1] * wt.a,
-                          wt.f + data.shape[0] * wt.e, wt.f),
-                  interpolation="nearest", cmap="tab20", vmin=0, vmax=255)
-        ax.add_collection(PolyCollection(u_paths, facecolor="none",
-                                          edgecolor="#c0392b", lw=1.0))
-        ax.set_xlim(bx[0], bx[2]); ax.set_ylim(bx[1], bx[3])
-        ax.set_aspect("equal"); ax.set_xticks([]); ax.set_yticks([])
+        ax.imshow(
+            data,
+            extent=(wt.c, wt.c + data.shape[1] * wt.a, wt.f + data.shape[0] * wt.e, wt.f),
+            interpolation="nearest",
+            cmap="tab20",
+            vmin=0,
+            vmax=255,
+        )
+        ax.add_collection(PolyCollection(u_paths, facecolor="none", edgecolor="#c0392b", lw=1.0))
+        ax.set_xlim(bx[0], bx[2])
+        ax.set_ylim(bx[1], bx[3])
+        ax.set_aspect("equal")
+        ax.set_xticks([])
+        ax.set_yticks([])
         ax.set_title(f"CDL {year}\nUSDA={usda_combo[i]}", fontsize=7.5)
 
     # Last panel left blank if only 8 CDL years
     axes_flat[9].axis("off")
 
     fig.suptitle(
-        f"Over-split debug: USDA uid={uid} ({u_area/4046.86:.0f} ac) → {n_ours} ours polys",
+        f"Over-split debug: USDA uid={uid} ({u_area / 4046.86:.0f} ac) → {n_ours} ours polys",
         fontsize=10,
     )
     fig.tight_layout()

@@ -1,18 +1,12 @@
 """Shared test fixtures."""
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import numpy as np
 import pytest
 import rasterio
+from affine import Affine
 from rasterio.transform import from_bounds
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
-    from affine import Affine
 
 
 @pytest.fixture

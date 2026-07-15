@@ -5,19 +5,14 @@ regressions. Reads from the indexed parquets emitted by ``csb parity-prep``
 so the bbox query benefits from row-group pruning.
 """
 
-from __future__ import annotations
-
 import logging
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import duckdb
 import matplotlib.pyplot as plt
 import numpy as np
 import shapely
 from matplotlib.collections import PolyCollection
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

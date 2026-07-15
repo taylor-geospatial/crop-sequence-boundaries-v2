@@ -19,10 +19,8 @@ Two-step usage:
 Without ``--roads-mask`` the behavior is unchanged.
 """
 
-from __future__ import annotations
-
 import logging
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import duckdb
 import numpy as np
@@ -30,9 +28,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import rasterio.features
 import shapely
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

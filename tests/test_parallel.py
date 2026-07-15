@@ -1,7 +1,5 @@
 """Tests for csb.utils — parallelism helpers."""
 
-from __future__ import annotations
-
 from csb.utils import parallel_map, parallel_starmap, worker_count
 
 

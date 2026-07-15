@@ -6,7 +6,7 @@ authors:
   - family-names: Corley
     given-names: Isaac
     email: isaac.corley@taylorgeospatial.org
-    affiliation: Taylor Geospatial Institute
+    affiliation: Taylor Geospatial
 license: Apache-2.0
 repository-code: "https://github.com/isaaccorley/crop-sequence-boundaries-v2"
 url: "https://github.com/isaaccorley/crop-sequence-boundaries-v2"

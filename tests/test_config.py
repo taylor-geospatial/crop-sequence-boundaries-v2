@@ -1,7 +1,5 @@
 """Tests for csb.config."""
 
-from __future__ import annotations
-
 from csb.config import (
     ACRES_PER_SQM,
     BARREN_CODE,

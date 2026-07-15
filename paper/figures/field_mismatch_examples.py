@@ -10,6 +10,7 @@ import duckdb
 import matplotlib.pyplot as plt
 import numpy as np
 import shapely
+from matplotlib.axes import Axes
 from matplotlib.collections import PolyCollection
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -32,6 +33,34 @@ OUT_PDF = Path(__file__).resolve().parent / "field_mismatch_examples.pdf"
 TX, TY = -100_000, 1_950_000
 BBOX = find_bbox_5070(TX, TY)
 PAD = 200.0  # 200 m buffer around each focus polygon for context
+
+
+def _draw_geometries(
+    ax: Axes,
+    rows: list[tuple[bytes]],
+    facecolor: str,
+    edgecolor: str,
+    alpha: float,
+    linewidth: float,
+) -> None:
+    paths = []
+    for (wkb,) in rows:
+        geom = shapely.from_wkb(bytes(wkb))
+        paths.extend(
+            np.asarray(part.exterior.coords)
+            for part in shapely.get_parts([geom])
+            if shapely.get_type_id(part) == 3 and not part.is_empty
+        )
+    if paths:
+        ax.add_collection(
+            PolyCollection(
+                paths,
+                facecolor=facecolor,
+                edgecolor=edgecolor,
+                lw=linewidth,
+                alpha=alpha,
+            )
+        )
 
 
 def main() -> None:
@@ -74,17 +103,23 @@ def main() -> None:
     """)
 
     # Pick 6 representative cases:
-    # 2 from worst-IoU 0–0.2
-    # 2 from middle 0.4–0.6
+    # 2 from worst-IoU 0-0.2
+    # 2 from middle 0.4-0.6
     # 2 from near-match 0.8+
     # Stratify on field area to avoid all-tiny examples
     queries = [
-        ("worst1",  "WHERE iou < 0.2 AND u_area > 50000 ORDER BY u_area DESC LIMIT 1 OFFSET 5"),
-        ("worst2",  "WHERE iou < 0.2 AND u_area > 50000 ORDER BY u_area DESC LIMIT 1 OFFSET 12"),
-        ("mid1",    "WHERE iou BETWEEN 0.4 AND 0.6 AND u_area > 80000 ORDER BY u_area DESC LIMIT 1 OFFSET 5"),
-        ("mid2",    "WHERE iou BETWEEN 0.4 AND 0.6 AND u_area > 80000 ORDER BY u_area DESC LIMIT 1 OFFSET 12"),
-        ("good1",   "WHERE iou > 0.85 AND u_area > 100000 ORDER BY u_area DESC LIMIT 1 OFFSET 5"),
-        ("good2",   "WHERE iou > 0.85 AND u_area > 100000 ORDER BY u_area DESC LIMIT 1 OFFSET 12"),
+        ("worst1", "WHERE iou < 0.2 AND u_area > 50000 ORDER BY u_area DESC LIMIT 1 OFFSET 5"),
+        ("worst2", "WHERE iou < 0.2 AND u_area > 50000 ORDER BY u_area DESC LIMIT 1 OFFSET 12"),
+        (
+            "mid1",
+            "WHERE iou BETWEEN 0.4 AND 0.6 AND u_area > 80000 ORDER BY u_area DESC LIMIT 1 OFFSET 5",
+        ),
+        (
+            "mid2",
+            "WHERE iou BETWEEN 0.4 AND 0.6 AND u_area > 80000 ORDER BY u_area DESC LIMIT 1 OFFSET 12",
+        ),
+        ("good1", "WHERE iou > 0.85 AND u_area > 100000 ORDER BY u_area DESC LIMIT 1 OFFSET 5"),
+        ("good2", "WHERE iou > 0.85 AND u_area > 100000 ORDER BY u_area DESC LIMIT 1 OFFSET 12"),
     ]
     samples = []
     for tag, where in queries:
@@ -93,14 +128,16 @@ def main() -> None:
             print(f"warn: no sample for {tag}")
             continue
         uid, iou, u_area, o_area = row
-        env_pol = conn.execute(f"SELECT ST_AsWKB(g) FROM usda WHERE uid={uid}").fetchone()[0]
+        env_row = conn.execute(f"SELECT ST_AsWKB(g) FROM usda WHERE uid={uid}").fetchone()
+        assert env_row is not None
+        env_pol = env_row[0]
         u_geom = shapely.from_wkb(bytes(env_pol))
         samples.append((tag, uid, iou, u_area, o_area, u_geom))
 
     print(f"{len(samples)} samples")
     fig, axes = plt.subplots(2, 3, figsize=(8.5, 6.0))
     axes = axes.flatten()
-    for ax, (tag, uid, iou, u_area, o_area, u_geom) in zip(axes, samples, strict=True):
+    for ax, (tag, _uid, iou, u_area, o_area, u_geom) in zip(axes, samples, strict=True):
         minx, miny, maxx, maxy = u_geom.bounds
         bx = (minx - PAD, miny - PAD, maxx + PAD, maxy + PAD)
         env_str = f"ST_MakeEnvelope({bx[0]}, {bx[1]}, {bx[2]}, {bx[3]})"
@@ -111,26 +148,20 @@ def main() -> None:
             f"SELECT ST_AsWKB(g) FROM usda WHERE ST_Intersects(g, {env_str})"
         ).fetchall()
 
-        def draw(geoms, fc: str, ec: str, alpha: float, lw: float) -> None:
-            paths = []
-            for (wkb,) in geoms:
-                geom = shapely.from_wkb(bytes(wkb))
-                for part in shapely.get_parts([geom]):
-                    if shapely.get_type_id(part) == 3 and not part.is_empty:
-                        paths.append(np.asarray(part.exterior.coords))
-            if paths:
-                ax.add_collection(
-                    PolyCollection(paths, facecolor=fc, edgecolor=ec, lw=lw, alpha=alpha)
-                )
-
-        draw(ours_geoms, "#3aa8ff", "#1f6bb0", 0.35, 0.6)
-        draw(usda_geoms, "#e89c2b", "#a86d12", 0.0, 1.0)
+        _draw_geometries(ax, ours_geoms, "#3aa8ff", "#1f6bb0", 0.35, 0.6)
+        _draw_geometries(ax, usda_geoms, "#e89c2b", "#a86d12", 0.0, 1.0)
         # Highlight focus polygon outline
         ax.add_collection(
             PolyCollection(
-                [np.asarray(p.exterior.coords) for p in shapely.get_parts([u_geom])
-                 if shapely.get_type_id(p) == 3 and not p.is_empty],
-                facecolor="none", edgecolor="#c0392b", lw=1.6, ls="--",
+                [
+                    np.asarray(p.exterior.coords)
+                    for p in shapely.get_parts([u_geom])
+                    if shapely.get_type_id(p) == 3 and not p.is_empty
+                ],
+                facecolor="none",
+                edgecolor="#c0392b",
+                lw=1.6,
+                ls="--",
             )
         )
         ax.set_xlim(bx[0], bx[2])
@@ -144,19 +175,26 @@ def main() -> None:
             fontsize=8.5,
         )
         for s in ax.spines.values():
-            s.set_edgecolor("0.7"); s.set_linewidth(0.5)
+            s.set_edgecolor("0.7")
+            s.set_linewidth(0.5)
 
     legend_handles = [
         plt.Rectangle((0, 0), 1, 1, fc="#3aa8ff", ec="#1f6bb0", alpha=0.5),
         plt.Rectangle((0, 0), 1, 1, fc="none", ec="#a86d12", lw=1.5),
         plt.Rectangle((0, 0), 1, 1, fc="none", ec="#c0392b", ls="--", lw=1.5),
     ]
-    fig.legend(legend_handles,
-               ["ours (filled)", "USDA outline", "focus USDA polygon"],
-               loc="lower center", bbox_to_anchor=(0.5, -0.02),
-               ncol=3, fontsize=9, frameon=False)
-    fig.suptitle("Iowa I15 — per-field correspondence examples across the IoU spectrum",
-                 fontsize=10, y=0.995)
+    fig.legend(
+        legend_handles,
+        ["ours (filled)", "USDA outline", "focus USDA polygon"],
+        loc="lower center",
+        bbox_to_anchor=(0.5, -0.02),
+        ncol=3,
+        fontsize=9,
+        frameon=False,
+    )
+    fig.suptitle(
+        "Iowa I15 — per-field correspondence examples across the IoU spectrum", fontsize=10, y=0.995
+    )
     fig.tight_layout()
     fig.savefig(OUT_PDF, bbox_inches="tight")
     print(f"wrote {OUT_PDF}")

@@ -17,10 +17,8 @@ set -euo pipefail
 mkdir -p logs
 cd "$SLURM_SUBMIT_DIR"
 
-CONFIG=${CONFIG:-configs/conus.yaml}
 START_YEAR=${START_YEAR:-2018}
 END_YEAR=${END_YEAR:-2025}
+OUTPUT_ROOT=${OUTPUT_ROOT:-data/output/conus}
 
-uv run csb --config "$CONFIG" polygonize "$START_YEAR" "$END_YEAR"
-uv run csb --config "$CONFIG" postprocess "$START_YEAR" "$END_YEAR" \
-    --polygonize-dir "data/output/conus/polygonize/${START_YEAR}_${END_YEAR}"
+uv run csb run-all "$START_YEAR" "$END_YEAR" --output "$OUTPUT_ROOT"

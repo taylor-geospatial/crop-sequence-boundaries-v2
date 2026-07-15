@@ -14,17 +14,12 @@ The full :func:`build_pmtiles` pipeline can use a working directory like
 serialization doesn't go over NFS.
 """
 
-from __future__ import annotations
-
 import logging
-import shutil
 import subprocess
 import time
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-    from pathlib import Path
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +150,6 @@ def build_pmtiles(
     finally:
         if not keep_fgb and fgb.exists():
             fgb.unlink()
-    if shutil.which(str(pmtiles)):
+    if pmtiles.exists():
         logger.info("pmtiles ready: %s", pmtiles)
     return pmtiles

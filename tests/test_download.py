@@ -1,15 +1,10 @@
 """Tests for csb.download."""
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
 from csb.download import CDL_BASE_URL, cdl_url, download_cdl
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def test_cdl_url_30m() -> None:

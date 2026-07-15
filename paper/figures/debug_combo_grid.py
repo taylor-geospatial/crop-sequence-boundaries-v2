@@ -18,8 +18,14 @@ sys.path.insert(0, str(ROOT / "src"))
 from csb.parity import find_bbox_5070  # noqa: E402
 
 OURS = (
-    ROOT / "data" / "output" / "conus" / "postprocess" / "2018_2025"
-    / "national" / "CSB1825_indexed.parquet"
+    ROOT
+    / "data"
+    / "output"
+    / "conus"
+    / "postprocess"
+    / "2018_2025"
+    / "national"
+    / "CSB1825_indexed.parquet"
 )
 USDA = ROOT / "data" / "CSB1825_indexed.parquet"
 NATIONAL_CDL = ROOT / "data" / "input" / "national_cdl"
@@ -55,6 +61,7 @@ def main() -> None:
     """)
 
     u_row = conn.execute(f"SELECT ST_AsWKB(g), area FROM usda WHERE uid={UID_TARGET}").fetchone()
+    assert u_row is not None
     u_geom = shapely.from_wkb(bytes(u_row[0]))
     u_area = u_row[1]
     minx, miny, maxx, maxy = u_geom.bounds
@@ -79,6 +86,8 @@ def main() -> None:
             combo = arr << np.uint64(8 * i)
         else:
             combo |= arr << np.uint64(8 * i)
+    assert combo is not None
+    assert transform is not None
     H, W = combo.shape
     print(f"raster shape: {H}x{W}")
 
@@ -88,19 +97,23 @@ def main() -> None:
     print(f"unique combos in patch: {len(unique)}")
 
     # Decode each unique combo
-    print(f"\nTop 10 combos by pixel count:")
+    print("\nTop 10 combos by pixel count:")
     counts = np.bincount(combo_compact.ravel())
     top = np.argsort(counts)[::-1][:10]
     for i in top:
         c = unique[i]
         years_vals = tuple(int((c >> (8 * j)) & 0xFF) for j in range(8))
-        print(f"  {counts[i]:>6}px  ({counts[i]*900/4046.86:.1f} ac)  {years_vals}")
+        print(f"  {counts[i]:>6}px  ({counts[i] * 900 / 4046.86:.1f} ac)  {years_vals}")
 
     # Render: 2 panels — combo grid and polygon overlay
     fig, axes = plt.subplots(1, 2, figsize=(12, 6))
 
-    extent = (transform.c, transform.c + W * transform.a,
-              transform.f + H * transform.e, transform.f)
+    extent = (
+        transform.c,
+        transform.c + W * transform.a,
+        transform.f + H * transform.e,
+        transform.f,
+    )
 
     # Panel 1: combo raster, colored by combo ID (each unique combo = unique color)
     ax = axes[0]
@@ -108,7 +121,9 @@ def main() -> None:
     target_combo_uint64 = sum(v << (8 * i) for i, v in enumerate([5, 1, 5, 1, 5, 1, 5, 1]))
     target_idx = np.searchsorted(unique, target_combo_uint64)
     is_target = combo_compact == target_idx
-    print(f"\n[5,1,5,1,5,1,5,1] pixels: {is_target.sum()} of {H*W} = {is_target.sum()*900/4046.86:.1f} ac")
+    print(
+        f"\n[5,1,5,1,5,1,5,1] pixels: {is_target.sum()} of {H * W} = {is_target.sum() * 900 / 4046.86:.1f} ac"
+    )
 
     # Colorize: show target combo green, all others by some hash
     rng = np.random.default_rng(seed=42)
@@ -118,15 +133,23 @@ def main() -> None:
     ax.imshow(rgb, extent=extent, interpolation="nearest")
 
     # Overlay USDA focus polygon outline (red)
-    u_paths = [np.asarray(p.exterior.coords) for p in shapely.get_parts([u_geom])
-               if shapely.get_type_id(p) == 3 and not p.is_empty]
+    u_paths = [
+        np.asarray(p.exterior.coords)
+        for p in shapely.get_parts([u_geom])
+        if shapely.get_type_id(p) == 3 and not p.is_empty
+    ]
     ax.add_collection(PolyCollection(u_paths, facecolor="none", edgecolor="#c0392b", lw=2.0))
-    ax.set_xlim(bx[0], bx[2]); ax.set_ylim(bx[1], bx[3])
-    ax.set_aspect("equal"); ax.set_xticks([]); ax.set_yticks([])
-    ax.set_title(f"per-pixel combo (green = USDA's combo {[5,1,5,1,5,1,5,1]})\n"
-                 f"USDA polygon (red) covers {u_area/4046.86:.0f} ac, "
-                 f"green pixels in patch = {is_target.sum()*900/4046.86:.0f} ac",
-                 fontsize=9)
+    ax.set_xlim(bx[0], bx[2])
+    ax.set_ylim(bx[1], bx[3])
+    ax.set_aspect("equal")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_title(
+        f"per-pixel combo (green = USDA's combo {[5, 1, 5, 1, 5, 1, 5, 1]})\n"
+        f"USDA polygon (red) covers {u_area / 4046.86:.0f} ac, "
+        f"green pixels in patch = {is_target.sum() * 900 / 4046.86:.0f} ac",
+        fontsize=9,
+    )
 
     # Panel 2: ours and USDA polygons overlay
     ax = axes[1]
@@ -137,29 +160,39 @@ def main() -> None:
     ours_paths = []
     for (wkb,) in ours_geoms:
         g = shapely.from_wkb(bytes(wkb))
-        for part in shapely.get_parts([g]):
-            if shapely.get_type_id(part) == 3 and not part.is_empty:
-                ours_paths.append(np.asarray(part.exterior.coords))
-    ax.add_collection(PolyCollection(ours_paths, facecolor="#3aa8ff",
-                                      edgecolor="#1f6bb0", lw=0.7, alpha=0.4))
+        ours_paths.extend(
+            np.asarray(part.exterior.coords)
+            for part in shapely.get_parts([g])
+            if shapely.get_type_id(part) == 3 and not part.is_empty
+        )
+    ax.add_collection(
+        PolyCollection(ours_paths, facecolor="#3aa8ff", edgecolor="#1f6bb0", lw=0.7, alpha=0.4)
+    )
     usda_geoms = conn.execute(
         f"SELECT ST_AsWKB(g) FROM usda WHERE ST_Intersects(g, {env_b})"
     ).fetchall()
     usda_paths = []
     for (wkb,) in usda_geoms:
         g = shapely.from_wkb(bytes(wkb))
-        for part in shapely.get_parts([g]):
-            if shapely.get_type_id(part) == 3 and not part.is_empty:
-                usda_paths.append(np.asarray(part.exterior.coords))
-    ax.add_collection(PolyCollection(usda_paths, facecolor="none",
-                                      edgecolor="#a86d12", lw=1.2))
-    ax.add_collection(PolyCollection(u_paths, facecolor="none", edgecolor="#c0392b",
-                                      lw=2.0, ls="--"))
-    ax.set_xlim(bx[0], bx[2]); ax.set_ylim(bx[1], bx[3])
-    ax.set_aspect("equal"); ax.set_xticks([]); ax.set_yticks([])
-    ax.set_title(f"polygons: ours (blue, {len(ours_geoms)} polys), "
-                 f"USDA (orange, {len(usda_geoms)} polys),\nfocus USDA (red dashed)",
-                 fontsize=9)
+        usda_paths.extend(
+            np.asarray(part.exterior.coords)
+            for part in shapely.get_parts([g])
+            if shapely.get_type_id(part) == 3 and not part.is_empty
+        )
+    ax.add_collection(PolyCollection(usda_paths, facecolor="none", edgecolor="#a86d12", lw=1.2))
+    ax.add_collection(
+        PolyCollection(u_paths, facecolor="none", edgecolor="#c0392b", lw=2.0, ls="--")
+    )
+    ax.set_xlim(bx[0], bx[2])
+    ax.set_ylim(bx[1], bx[3])
+    ax.set_aspect("equal")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_title(
+        f"polygons: ours (blue, {len(ours_geoms)} polys), "
+        f"USDA (orange, {len(usda_geoms)} polys),\nfocus USDA (red dashed)",
+        fontsize=9,
+    )
 
     fig.suptitle(f"Combo-grid debug for USDA uid={UID_TARGET} (Iowa I15)", fontsize=10)
     fig.tight_layout()

@@ -14,19 +14,14 @@ Palouse to Delmarva — to give an honest IoU distribution rather than a single
 dense corn-belt sample.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 import time
-from typing import TYPE_CHECKING
+from collections.abc import Iterable
+from pathlib import Path
 
 import duckdb
 import numpy as np
-
-if TYPE_CHECKING:
-    from collections.abc import Iterable
-    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 

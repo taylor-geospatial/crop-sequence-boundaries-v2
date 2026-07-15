@@ -1,8 +1,6 @@
 """Tests for csb.polygonize — process_tile and run_polygonize."""
 
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
@@ -10,9 +8,6 @@ import rasterio
 from rasterio.transform import from_bounds
 
 from csb.polygonize import _tile_windows, process_tile, run_polygonize
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _make_national_cdl(base_dir: Path, years: tuple[int, ...], size: int = 20) -> None:

@@ -30,7 +30,6 @@ venv/
 data/
 examples/
 paper/
-assets/
 tests/
 *.parquet
 *.tif

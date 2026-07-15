@@ -8,8 +8,6 @@ For each (radius, min_patch_size, iterations, final_pass_radius) combo:
 Lets us pick the best filter parameters before committing to a CONUS rerun.
 """
 
-from __future__ import annotations
-
 import json
 import shutil
 import sys
@@ -35,9 +33,9 @@ BBOX = find_bbox_5070(TX, TY)
 # (id, radius, min_patch, iters, final_radius, label)
 SWEEPS = [
     ("baseline", 0, 5, 0, 0, "no filter (baseline)"),
-    ("r1_p3_i2",  1, 3, 2, 0, "r=1 patch<3 i=2 (mild)"),
-    ("r1_p5_i4",  1, 5, 4, 0, "r=1 patch<5 i=4"),
-    ("r2_p5_i4",  2, 5, 4, 0, "r=2 patch<5 i=4 (USDA-equiv at 30m)"),
+    ("r1_p3_i2", 1, 3, 2, 0, "r=1 patch<3 i=2 (mild)"),
+    ("r1_p5_i4", 1, 5, 4, 0, "r=1 patch<5 i=4"),
+    ("r2_p5_i4", 2, 5, 4, 0, "r=2 patch<5 i=4 (USDA-equiv at 30m)"),
     ("r2_p10_i4", 2, 10, 4, 0, "r=2 patch<10 i=4"),
     ("r2_p10_i8", 2, 10, 8, 0, "r=2 patch<10 i=8 (USDA iters)"),
     ("r2_p5_i4_f1", 2, 5, 4, 1, "r=2 patch<5 i=4 + final r=1"),
@@ -69,8 +67,12 @@ def per_field_iou(ours_parquet: Path) -> dict:
           AND ST_Intersects(geometry, {env})
         """
     )
-    n_ours = conn.execute("SELECT COUNT(*) FROM ours").fetchone()[0]
-    n_usda = conn.execute("SELECT COUNT(*) FROM usda").fetchone()[0]
+    ours_count = conn.execute("SELECT COUNT(*) FROM ours").fetchone()
+    usda_count = conn.execute("SELECT COUNT(*) FROM usda").fetchone()
+    assert ours_count is not None
+    assert usda_count is not None
+    n_ours = ours_count[0]
+    n_usda = usda_count[0]
 
     conn.execute(
         """
@@ -109,7 +111,9 @@ def per_field_iou(ours_parquet: Path) -> dict:
     }
 
 
-def run_one(sweep_id: str, radius: int, min_patch: int, iters: int, final_radius: int, label: str) -> dict:
+def run_one(
+    sweep_id: str, radius: int, min_patch: int, iters: int, final_radius: int, label: str
+) -> dict:
     out = OUT_ROOT / sweep_id
     target = out / f"{TILE}.parquet"
     if target.exists():
@@ -166,8 +170,8 @@ def main() -> None:
             f"{r['id']:<14} "
             f"{r.get('iou_mean', 0):>6.3f} "
             f"{r.get('iou_median', 0):>7.3f} "
-            f"{r.get('share_near', 0)*100:>5.1f}% "
-            f"{r.get('share_poor', 0)*100:>5.1f}% "
+            f"{r.get('share_near', 0) * 100:>5.1f}% "
+            f"{r.get('share_poor', 0) * 100:>5.1f}% "
             f"{r.get('n_ours', 0):>8,} "
             f"{r['label']:<40}"
         )

@@ -1,7 +1,5 @@
 """Build the ASD+county boundary file from Census TIGER/Line + NASS crosswalk."""
 
-from __future__ import annotations
-
 import logging
 import urllib.request
 from pathlib import Path

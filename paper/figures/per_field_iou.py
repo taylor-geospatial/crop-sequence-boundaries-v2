@@ -61,13 +61,17 @@ def main() -> None:
           AND ymax >= {by0} AND ymin <= {by1}
           AND ST_Intersects(geometry, {env})
     """)
-    n_ours = conn.execute("SELECT COUNT(*) FROM ours").fetchone()[0]
-    n_usda = conn.execute("SELECT COUNT(*) FROM usda").fetchone()[0]
+    ours_count = conn.execute("SELECT COUNT(*) FROM ours").fetchone()
+    usda_count = conn.execute("SELECT COUNT(*) FROM usda").fetchone()
+    assert ours_count is not None
+    assert usda_count is not None
+    n_ours = ours_count[0]
+    n_usda = usda_count[0]
     print(f"  ours={n_ours}  usda={n_usda}")
 
     # Pairwise intersections via spatial join. Keep top-1 ours match per usda.
     print("computing pairwise intersections...")
-    conn.execute(f"""
+    conn.execute("""
         CREATE TABLE pairs AS
         SELECT
             u.uid,
@@ -77,7 +81,9 @@ def main() -> None:
             o.area AS o_area
         FROM usda u JOIN ours o ON ST_Intersects(u.g, o.g)
     """)
-    n_pairs = conn.execute("SELECT COUNT(*) FROM pairs").fetchone()[0]
+    pair_count = conn.execute("SELECT COUNT(*) FROM pairs").fetchone()
+    assert pair_count is not None
+    n_pairs = pair_count[0]
     print(f"  candidate pairs: {n_pairs}")
 
     # Best-match: for each usda u, take the ours o with the largest intersection.
@@ -97,7 +103,6 @@ def main() -> None:
         SELECT iou, coverage_u, u_area, o_area, inter_area FROM best
     """).fetchall()
     iou = np.array([r[0] for r in rows], dtype=np.float64)
-    cov = np.array([r[1] for r in rows], dtype=np.float64)
     u_area = np.array([r[2] for r in rows], dtype=np.float64)
     o_area = np.array([r[3] for r in rows], dtype=np.float64)
 
@@ -112,7 +117,7 @@ def main() -> None:
         "bbox": list(BBOX),
         "n_ours": int(n_ours),
         "n_usda": int(n_usda),
-        "n_matched": int(len(iou)),
+        "n_matched": len(iou),
         "iou_mean": float(np.mean(iou)) if len(iou) else None,
         "iou_median": float(np.median(iou)) if len(iou) else None,
         "iou_p10": float(np.percentile(iou, 10)) if len(iou) else None,
@@ -134,7 +139,9 @@ def main() -> None:
     # Plot histogram
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7.0, 3.0))
     ax1.hist(iou, bins=50, range=(0, 1), color="#2c5f8d", edgecolor="white", lw=0.4)
-    ax1.axvline(np.median(iou), color="#d4801a", lw=1.2, ls="--", label=f"median {np.median(iou):.2f}")
+    ax1.axvline(
+        np.median(iou), color="#d4801a", lw=1.2, ls="--", label=f"median {np.median(iou):.2f}"
+    )
     ax1.set_xlabel("Per-field IoU vs USDA best-match", fontsize=9)
     ax1.set_ylabel("USDA polygons", fontsize=9)
     ax1.set_xlim(0, 1)
@@ -145,15 +152,28 @@ def main() -> None:
         ax1.spines[s].set_visible(False)
 
     # Stacked bar of bucket shares
-    sizes = [summary["share_near"], summary["share_partial"], summary["share_poor"], summary["share_unmatched"]]
+    sizes = [
+        summary["share_near"],
+        summary["share_partial"],
+        summary["share_poor"],
+        summary["share_unmatched"],
+    ]
     labels = ["IoU≥0.9", "0.5≤IoU<0.9", "IoU<0.5", "no match"]
     colors = ["#2c5f8d", "#5a9bd4", "#d4801a", "#c0392b"]
     left = 0
     for s, lab, c in zip(sizes, labels, colors, strict=True):
         ax2.barh(0, s, left=left, color=c, edgecolor="white", lw=0.7, height=0.55)
         if s > 0.04:
-            ax2.text(left + s / 2, 0, f"{lab}\n{s*100:.0f}%", ha="center", va="center",
-                     fontsize=8, color="white", weight="semibold")
+            ax2.text(
+                left + s / 2,
+                0,
+                f"{lab}\n{s * 100:.0f}%",
+                ha="center",
+                va="center",
+                fontsize=8,
+                color="white",
+                weight="semibold",
+            )
         left += s
     ax2.set_xlim(0, 1)
     ax2.set_ylim(-0.5, 0.5)
@@ -163,7 +183,9 @@ def main() -> None:
     for s in ("top", "right", "left"):
         ax2.spines[s].set_visible(False)
 
-    fig.suptitle(f"Per-field correspondence on Iowa I15: ours={n_ours:,} polys, USDA={n_usda:,}", fontsize=10)
+    fig.suptitle(
+        f"Per-field correspondence on Iowa I15: ours={n_ours:,} polys, USDA={n_usda:,}", fontsize=10
+    )
     fig.tight_layout()
     fig.savefig(OUT_PDF, bbox_inches="tight")
     print(f"wrote {OUT_PDF}")

@@ -1,12 +1,13 @@
 """Polygonization wrapper + parallelism helpers."""
 
-from __future__ import annotations
-
 import logging
 import multiprocessing
+from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+import numpy as np
+import pyarrow as pa
 from contourrs import shapes_arrow
 from rich.progress import (
     BarColumn,
@@ -17,12 +18,6 @@ from rich.progress import (
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    import numpy as np
-    import pyarrow as pa
 
 logger = logging.getLogger(__name__)
 

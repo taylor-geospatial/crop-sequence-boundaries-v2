@@ -6,8 +6,6 @@ polygonize phase 1. Then nationally: merge all tiles, derive CSBID/CSBACRES/
 INSIDE_X,Y, write the national GeoParquet, split by state.
 """
 
-from __future__ import annotations
-
 import logging
 import time
 from pathlib import Path
