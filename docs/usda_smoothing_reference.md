@@ -131,7 +131,40 @@ else. That is far weaker than both the GEE version and our focal-mode
 experiments, and consistent with our finding that heavy smoothing raises
 coverage IoU but *lowers* instance agreement (boundary migration).
 
+## Reclass table (received 2026-07-21)
+
+Peter sent `reclass_table` as a CSV — saved verbatim at
+`src/csb/data/CDL_tempGeneralCode.csv`, ported in `src/csb/reclass.py`
+(`--reclass`). It is a FROM/TO/OUT lookup (raw CDL → "temp general code") that
+does two things:
+
+1. **Crop / non-crop definition.** `OUT == 0` is non-crop and dropped. This is
+   broader than the 61–65 grouping: 58/59/60 (clover, sod/grass seed,
+   switchgrass), 63/64/65, 71, 176 (grass/pasture), 190/195 (wetlands), all
+   developed/water/forest → 0; hay (37) and specialty crops stay crop.
+2. **Class consolidation.** Commonly-confused classes collapse to one temp
+   code so year-to-year flicker doesn't fracture a field — e.g. tree-fruit /
+   orchard classes 66/67/68/72/74–77 and 204/210–212/215/217/218/220/223 → 46.
+
+Barren (CDL 61, 131) → temp 45, which is how `COUNT45` in the retention rule
+works. Peter's notes: the table is *ideally state- and year-specific* (mis-
+classification differs regionally); this national version is what he shared.
+He also said USDA reports only the original CDL code in outputs, never the
+temp code — so our port keeps raw CDL for attributes and uses temp codes only
+for delineation.
+
+## Roads / rail (method described 2026-07-21)
+
+Peter couldn't easily share the original code (built outside USDA) but gave the
+method: **TIGER Edges** for roads (all but the smallest class) + **all rail
+codes** (+ fence lines), buffer each line **5 m (maybe 7 m)** → ~10 m-wide
+polygon, rasterize at **10 m**. Pre-2020 they used one static network for all
+years; with more years now he suggests **per-year TIGER**. The >1 GB zipped
+raster is awkward to send, so rebuilding from TIGER (`scratch/fetch_tiger.py`)
+is the intended path. He also flagged: **use the CSB1825 metadata as reference
+— things changed since Hunt et al. 2024.**
+
 ## What remains unpublished
 
-- `reclass_table` contents (complete CDL category regroup).
-- The TIGER-derived 10 m road/rail rasters (offered on request).
+- Nothing load-bearing on the raster side. The reclass table is national, not
+  state/year-specific (a possible future refinement).
