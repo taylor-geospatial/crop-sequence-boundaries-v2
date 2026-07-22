@@ -69,6 +69,22 @@ def _tile_windows(width: int, height: int, tile_size: int) -> list[tuple[str, Wi
     return tiles
 
 
+def _shard_tiles(
+    tiles: list[tuple[str, Window]], num_shards: int, shard_index: int
+) -> list[tuple[str, Window]]:
+    """Round-robin partition tiles for multi-node SLURM arrays.
+
+    Deterministic over the name-sorted tile list so each shard gets a similar
+    mix of dense/sparse tiles. The union over shard_index 0..num_shards-1 is
+    exactly the input, with no overlap.
+    """
+    if not 0 <= shard_index < num_shards:
+        msg = f"shard_index {shard_index} out of range [0, {num_shards})"
+        raise ValueError(msg)
+    ordered = sorted(tiles, key=lambda t: t[0])
+    return [t for i, t in enumerate(ordered) if i % num_shards == shard_index]
+
+
 def _combine_years_windowed(
     national_cdl: Path,
     years: list[int],
@@ -77,6 +93,8 @@ def _combine_years_windowed(
     focal_min_patch: int = 5,
     focal_iterations: int = 4,
     focal_final_pass_radius: int = 0,
+    exclude_low_noncrop: bool = False,
+    usda_noise_px: int = 0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, Any]:
     """Read window from each year's CDL, pack sequences.
 
@@ -116,9 +134,20 @@ def _combine_years_windowed(
             )
         # Remap non-cropland in place (uint8 stays uint8).
         non_crop = (arr > CDL_CROP_MAX) & (arr != 0)
+        if exclude_low_noncrop:
+            # USDA's GEE preprocessing treats CDL 61-65 (fallow/idle, pasture,
+            # forest, shrubland, barren) as NON-CROP (CSB1825 metadata attribute
+            # domains); the default crop range 1..CDL_CROP_MAX counts them.
+            non_crop |= (arr >= 61) & (arr <= 65)
         if non_crop.any():
             arr = arr.copy()
             arr[non_crop] = barren
+        # USDA's production filter runs on the RECLASSIFIED raster, so after
+        # the remap above (docs/usda_smoothing_reference.md).
+        if usda_noise_px >= 1:
+            from csb.usda_filter import remove_small_components
+
+            arr = remove_small_components(arr, max_noise_px=usda_noise_px)
         shifted = arr.astype(np.uint64) << np.uint64(8 * i)
         if seq_ids is None:
             seq_ids = shifted
@@ -167,6 +196,9 @@ def _phase1_polygonize(args: tuple[str, dict[str, Any]]) -> str:
     focal_min_patch: int = params.get("focal_min_patch", 5)
     focal_iterations: int = params.get("focal_iterations", 4)
     focal_final_pass_radius: int = params.get("focal_final_pass_radius", 0)
+    usda_retention: bool = params.get("usda_retention", False)
+    exclude_low_noncrop: bool = params.get("exclude_low_noncrop", False)
+    usda_noise_px: int = params.get("usda_noise_px", 0)
 
     years = list(range(start_year, end_year + 1))
     t0 = time.perf_counter()
@@ -184,11 +216,16 @@ def _phase1_polygonize(args: tuple[str, dict[str, Any]]) -> str:
         focal_min_patch=focal_min_patch,
         focal_iterations=focal_iterations,
         focal_final_pass_radius=focal_final_pass_radius,
+        exclude_low_noncrop=exclude_low_noncrop,
+        usda_noise_px=usda_noise_px,
     )
 
-    # Keep filter: effective_count (cropland years - barren years) >= min_cropland_years.
+    # Keep filter. Default: effective_count >= min_cropland_years per PIXEL.
+    # usda_retention instead mirrors CSB-create.py's polygon-level Select
+    # `(COUNT0-COUNT45 >= 2) OR (Shape_Area >= 10000 AND COUNT0-COUNT45 >= 1)`:
+    # admit any crop-bearing pixel here, then filter per LABEL after labeling.
     effective_map = effective_per_combo[combo_raster]
-    mask = effective_map >= min_cropland
+    mask = effective_map >= (1 if usda_retention else min_cropland)
     if roads_mask_path:
         from pathlib import Path as _Path
 
@@ -205,6 +242,33 @@ def _phase1_polygonize(args: tuple[str, dict[str, Any]]) -> str:
     lbl, n_lbl = label_raster(combo_raster, mask)
     if n_lbl == 0:
         return f"Skipped {area} (no labels)"
+
+    if usda_retention:
+        # Polygon-level retention mirroring the USDA Select: keep labels with
+        # effective >= min_cropland, or area >= min_polygon_area with >= 1.
+        flat_lbl = lbl.ravel()
+        flat_combo = combo_raster.ravel()
+        order = np.argsort(flat_lbl, kind="stable")
+        sorted_lbl = flat_lbl[order]
+        first = np.r_[True, sorted_lbl[1:] != sorted_lbl[:-1]]
+        first_idx = order[first]
+        eff_lbl = np.zeros(n_lbl + 1, dtype=np.int16)
+        eff_lbl[flat_lbl[first_idx]] = effective_per_combo[flat_combo[first_idx]]
+        del order, sorted_lbl, first, first_idx, flat_lbl, flat_combo
+        areas_lbl = label_areas(lbl, n_lbl)
+        keep = (eff_lbl >= min_cropland) | (
+            (areas_lbl >= min_area_keep) & (eff_lbl >= 1)
+        )
+        keep[0] = False
+        n_drop = int((~keep[1:]).sum())
+        if n_drop:
+            remap = np.where(keep, np.arange(n_lbl + 1, dtype=np.int32), np.int32(0))
+            lbl = remap[lbl].astype(np.int32)
+            # Re-label to compact ids so downstream sizes stay small.
+            lbl, n_lbl = label_raster(lbl, lbl > 0)
+            logger.info("%s: usda_retention dropped %s labels", area, n_drop)
+        if n_lbl == 0:
+            return f"Skipped {area} (all dropped by usda_retention)"
 
     logger.info("%s: eliminate (%s passes, thresholds=%s)", area, len(thresholds), thresholds)
     lbl, n_lbl = eliminate_label_raster(lbl, n_lbl, thresholds)
@@ -363,8 +427,13 @@ def run_polygonize(
     phase1_workers: int | None = None,
     phase2_workers: int | None = None,
     area: str | None = None,
+    num_shards: int = 1,
+    shard_index: int = 0,
     roads_mask: str | Path | None = None,
     same_combo_dissolve: bool = True,
+    usda_retention: bool = False,
+    exclude_low_noncrop: bool = False,
+    usda_noise_px: int = 0,
     focal_radius: int = 0,
     focal_min_patch: int = 5,
     focal_iterations: int = 4,
@@ -393,6 +462,9 @@ def run_polygonize(
     all_tiles = _tile_windows(raster_width, raster_height, tile_size)
     if area:
         all_tiles = [(name, win) for name, win in all_tiles if name == area]
+
+    if num_shards > 1:
+        all_tiles = _shard_tiles(all_tiles, num_shards, shard_index)
 
     done = {f.stem for f in output_dir.glob("*.parquet")}
     phase1_done = {f.stem for f in intermediate_dir.glob("*.parquet")}
@@ -427,6 +499,9 @@ def run_polygonize(
         "min_polygon_area": min_polygon_area,
         "roads_mask": str(roads_mask) if roads_mask else None,
         "same_combo_dissolve": same_combo_dissolve,
+        "usda_retention": usda_retention,
+        "exclude_low_noncrop": exclude_low_noncrop,
+        "usda_noise_px": usda_noise_px,
         "focal_radius": focal_radius,
         "focal_min_patch": focal_min_patch,
         "focal_iterations": focal_iterations,
