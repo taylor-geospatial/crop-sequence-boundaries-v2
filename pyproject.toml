@@ -54,6 +54,12 @@ dev = [
   "ruff>=0,<1",
   "ty>=0,<1",
 ]
+# SedonaDB polygon-side elimination baseline, used only by `csb bench-eliminate`
+# to compare engines. Not required by the production pipeline.
+bench = [
+  "sedonadb>=0.4,<1",
+  "geoarrow-pyarrow>=0.2,<1",
+]
 
 [tool.uv]
 build-backend.module-name = "csb"
