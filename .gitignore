@@ -27,3 +27,4 @@ htmlcov/
 .pyre/
 .ipynb_checkpoints
 .claude/
+scratch/
