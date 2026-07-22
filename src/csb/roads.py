@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # Pinned Overture release. Update when a newer release is desired; the
 # schema is stable across recent releases per the Overture spec.
-DEFAULT_OVERTURE_RELEASE = "2026-04-15.0"
+DEFAULT_OVERTURE_RELEASE = "2026-06-17.0"
 
 # Road classes worth preserving as field separators. We exclude footways /
 # cycleways / paths (too thin to matter at 30m) but keep everything from
