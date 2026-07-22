@@ -240,6 +240,15 @@ def _polygonize_options(f):  # noqa: ANN001, ANN202 — Click decorator factory
             "as non-crop, matching USDA's GEE category grouping.",
         ),
         click.option(
+            "--reclass/--no-reclass",
+            "use_reclass",
+            default=False,
+            help="Reclassify raw CDL to USDA's temp general codes before "
+            "combine (data/CDL_tempGeneralCode.csv): defines crop/non-crop "
+            "(OUT=0) and merges commonly-confused classes. Supersedes "
+            "--exclude-low-noncrop. See docs/usda_smoothing_reference.md.",
+        ),
+        click.option(
             "--usda-noise-filter",
             "usda_noise_px",
             type=int,
@@ -309,6 +318,7 @@ def polygonize(
     same_combo_dissolve: bool,
     usda_retention: bool,
     exclude_low_noncrop: bool,
+    use_reclass: bool,
     usda_noise_px: int,
     focal_radius: int,
 ) -> None:
@@ -340,6 +350,7 @@ def polygonize(
         same_combo_dissolve=same_combo_dissolve,
         usda_retention=usda_retention,
         exclude_low_noncrop=exclude_low_noncrop,
+        use_reclass=use_reclass,
         usda_noise_px=usda_noise_px,
         focal_radius=focal_radius,
     )
@@ -438,6 +449,7 @@ def run_all(
     same_combo_dissolve: bool,
     usda_retention: bool,
     exclude_low_noncrop: bool,
+    use_reclass: bool,
     usda_noise_px: int,
     focal_radius: int,
 ) -> None:
@@ -465,6 +477,7 @@ def run_all(
         same_combo_dissolve=same_combo_dissolve,
         usda_retention=usda_retention,
         exclude_low_noncrop=exclude_low_noncrop,
+        use_reclass=use_reclass,
         usda_noise_px=usda_noise_px,
         focal_radius=focal_radius,
     )

@@ -95,24 +95,32 @@ def _combine_years_windowed(
     focal_final_pass_radius: int = 0,
     exclude_low_noncrop: bool = False,
     usda_noise_px: int = 0,
+    use_reclass: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, Any]:
     """Read window from each year's CDL, pack sequences.
 
     Mirrors arcpy.gp.Combine_sa: groups pixels by their full N-year CDL
-    sequence. Each unique sequence gets a compact integer ID.
+    sequence. Each unique sequence gets a compact integer ID. Grouping keys on
+    a "delineation" sequence (temp general codes when ``use_reclass``, else raw
+    CDL with non-crop remapped to BARREN); the returned CDL attributes always
+    carry the *original* CDL per combo.
 
     Returns:
         combo_raster: HxW int32 of compact combo IDs (0..n_combos-1).
         effective_per_combo: 1D int16, COUNT0-COUNT_BARREN per combo.
-        cdl_per_combo_year: 2D uint8, shape (n_combos, n_years), CDL value per
-            (combo, year) — non-cropland already remapped to BARREN_CODE.
+        cdl_per_combo_year: 2D uint8, shape (n_combos, n_years), original CDL
+            value per (combo, year); non-cropland years are 0.
         transform: rasterio Affine for this window.
     """
-    # Pack each year's CDL byte (0..254) into one slot of a uint64 (8 yr * 8 b = 64 b).
+    # Pack each year's byte (0..254) into one slot of a uint64 (8 yr * 8 b = 64 b).
     if len(years) > 8:
         msg = f"bit-packed combine supports up to 8 years (got {len(years)})"
         raise ValueError(msg)
-    seq_ids: np.ndarray | None = None
+    if use_reclass:
+        from csb.reclass import TEMP_BARREN, apply_reclass
+
+    seq_key: np.ndarray | None = None  # delineation key (temp or remapped CDL)
+    seq_orig: np.ndarray | None = None  # original CDL, for attributes
     transform = None
     barren = np.uint8(BARREN_CODE)
     for i, year in enumerate(years):
@@ -132,45 +140,66 @@ def _combine_years_windowed(
                 iterations=focal_iterations,
                 final_pass_radius=focal_final_pass_radius,
             )
-        # Remap non-cropland in place (uint8 stays uint8).
-        non_crop = (arr > CDL_CROP_MAX) & (arr != 0)
-        if exclude_low_noncrop:
-            # USDA's GEE preprocessing treats CDL 61-65 (fallow/idle, pasture,
-            # forest, shrubland, barren) as NON-CROP (CSB1825 metadata attribute
-            # domains); the default crop range 1..CDL_CROP_MAX counts them.
-            non_crop |= (arr >= 61) & (arr <= 65)
-        if non_crop.any():
-            arr = arr.copy()
-            arr[non_crop] = barren
-        # USDA's production filter runs on the RECLASSIFIED raster, so after
-        # the remap above (docs/usda_smoothing_reference.md).
+        if use_reclass:
+            # USDA's ReclassByTable: raw CDL -> temp general code (0 = non-crop).
+            key = apply_reclass(arr)
+        else:
+            # Coarse fallback: remap non-cropland to BARREN.
+            key = arr.copy()
+            non_crop = (arr > CDL_CROP_MAX) & (arr != 0)
+            if exclude_low_noncrop:
+                # CDL 61-65 (fallow/idle, pasture, forest, shrub, barren) as
+                # NON-CROP (CSB1825 metadata attribute domains).
+                non_crop |= (arr >= 61) & (arr <= 65)
+            if non_crop.any():
+                key[non_crop] = barren
+        # USDA's production filter runs on the RECLASSIFIED raster, i.e. on the
+        # delineation key (docs/usda_smoothing_reference.md).
         if usda_noise_px >= 1:
             from csb.usda_filter import remove_small_components
 
-            arr = remove_small_components(arr, max_noise_px=usda_noise_px)
-        shifted = arr.astype(np.uint64) << np.uint64(8 * i)
-        if seq_ids is None:
-            seq_ids = shifted
+            key = remove_small_components(key, max_noise_px=usda_noise_px)
+        # Attribute sequence: raw CDL under reclass (USDA reports original CDL);
+        # else the remapped/filtered key, preserving the pre-reclass contract
+        # where cdl_per_combo_year carries BARREN for non-crop years.
+        orig = arr if use_reclass else key
+        shifted_key = key.astype(np.uint64) << np.uint64(8 * i)
+        shifted_orig = orig.astype(np.uint64) << np.uint64(8 * i)
+        if seq_key is None or seq_orig is None:
+            seq_key, seq_orig = shifted_key, shifted_orig
         else:
-            np.bitwise_or(seq_ids, shifted, out=seq_ids)
+            seq_key |= shifted_key
+            seq_orig |= shifted_orig
 
-    assert seq_ids is not None
-    shape = seq_ids.shape
-    unique_seqs, flat_ids = np.unique(seq_ids.ravel(), return_inverse=True)
-    del seq_ids
+    if seq_key is None or seq_orig is None:
+        msg = "no years combined"
+        raise ValueError(msg)
+    shape = seq_key.shape
+    unique_keys, first_idx, flat_ids = np.unique(
+        seq_key.ravel(), return_index=True, return_inverse=True
+    )
     combo_raster = flat_ids.astype(np.int32, copy=False).reshape(shape)
-    del flat_ids
+    # Representative original CDL sequence per combo (first pixel of each combo).
+    rep_orig = seq_orig.ravel()[first_idx]
+    del seq_key, seq_orig, flat_ids
 
-    n_combos = len(unique_seqs)
+    n_combos = len(unique_keys)
     n_years = len(years)
+    barren_val = TEMP_BARREN if use_reclass else BARREN_CODE
     cdl_per_combo_year = np.zeros((n_combos, n_years), dtype=np.uint8)
     count0 = np.zeros(n_combos, dtype=np.int16)
     count_barren = np.zeros(n_combos, dtype=np.int16)
     for i in range(n_years):
-        yr_vals = ((unique_seqs >> np.uint64(8 * i)) & np.uint64(0xFF)).astype(np.uint8)
-        cdl_per_combo_year[:, i] = yr_vals
-        count0 += (yr_vals > 0).astype(np.int16)
-        count_barren += (yr_vals == BARREN_CODE).astype(np.int16)
+        key_vals = ((unique_keys >> np.uint64(8 * i)) & np.uint64(0xFF)).astype(np.uint8)
+        orig_vals = ((rep_orig >> np.uint64(8 * i)) & np.uint64(0xFF)).astype(np.uint8)
+        # Under reclass, attribute = original CDL, blanked where the temp code
+        # calls the year non-crop. Without reclass, keep the raw (BARREN-carrying)
+        # value; phase 1 remaps BARREN -> 0 downstream (pre-reclass contract).
+        if use_reclass:
+            orig_vals = np.where(key_vals == 0, 0, orig_vals)
+        cdl_per_combo_year[:, i] = orig_vals
+        count0 += (key_vals > 0).astype(np.int16)
+        count_barren += (key_vals == barren_val).astype(np.int16)
     effective_per_combo = (count0 - count_barren).astype(np.int16)
     return combo_raster, effective_per_combo, cdl_per_combo_year, transform
 
@@ -199,6 +228,7 @@ def _phase1_polygonize(args: tuple[str, dict[str, Any]]) -> str:
     usda_retention: bool = params.get("usda_retention", False)
     exclude_low_noncrop: bool = params.get("exclude_low_noncrop", False)
     usda_noise_px: int = params.get("usda_noise_px", 0)
+    use_reclass: bool = params.get("use_reclass", False)
 
     years = list(range(start_year, end_year + 1))
     t0 = time.perf_counter()
@@ -218,6 +248,7 @@ def _phase1_polygonize(args: tuple[str, dict[str, Any]]) -> str:
         focal_final_pass_radius=focal_final_pass_radius,
         exclude_low_noncrop=exclude_low_noncrop,
         usda_noise_px=usda_noise_px,
+        use_reclass=use_reclass,
     )
 
     # Keep filter. Default: effective_count >= min_cropland_years per PIXEL.
@@ -434,6 +465,7 @@ def run_polygonize(
     usda_retention: bool = False,
     exclude_low_noncrop: bool = False,
     usda_noise_px: int = 0,
+    use_reclass: bool = False,
     focal_radius: int = 0,
     focal_min_patch: int = 5,
     focal_iterations: int = 4,
@@ -502,6 +534,7 @@ def run_polygonize(
         "usda_retention": usda_retention,
         "exclude_low_noncrop": exclude_low_noncrop,
         "usda_noise_px": usda_noise_px,
+        "use_reclass": use_reclass,
         "focal_radius": focal_radius,
         "focal_min_patch": focal_min_patch,
         "focal_iterations": focal_iterations,

@@ -1,4 +1,7 @@
 data/
+# Bundled package data (USDA reclass table) is source, not pipeline data.
+!src/csb/data/
+!src/csb/data/**
 crop-sequence-boundaries/
 
 __pycache__/
