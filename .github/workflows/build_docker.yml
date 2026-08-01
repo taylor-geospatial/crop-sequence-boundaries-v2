@@ -1,0 +1,103 @@
+name: build-docker
+
+# Build + scan + publish the container image on tag pushes. Runs in parallel
+# with release.yml; PyPI and GHCR are independent surfaces.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build + scan + push
+    runs-on: ubuntu-latest
+    permissions:
+      # OIDC token for GHCR; no PAT.
+      contents: read
+      packages: write
+      id-token: write
+      security-events: write
+
+    env:
+      # Lower-case the repo path so it is a valid GHCR namespace.
+      IMAGE: ghcr.io/${{ github.repository }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Normalize image name to lower case
+        id: image
+        run: |
+          echo "ref=$(echo '${{ env.IMAGE }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags + labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.image.outputs.ref }}
+          tags: |
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      # Build locally first so we can scan before pushing. Load to the
+      # docker daemon on a single platform; we re-run buildx for the push.
+      - name: Build image (load for scan)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          push: false
+          tags: ${{ steps.image.outputs.ref }}:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ steps.image.outputs.ref }}:scan
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          vuln-type: os,library
+
+      - name: Upload Trivy SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy
+
+      # Re-run buildx to push the scanned image with the full tag set.
+      - name: Build + push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true

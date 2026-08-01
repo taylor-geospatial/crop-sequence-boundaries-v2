@@ -1,0 +1,50 @@
+# Keep the build context small. Only ship what `uv sync` needs to build the
+# wheel plus license/readme metadata.
+
+# VCS / editor
+.git/
+.gitignore
+.gitattributes
+.github/
+.vscode/
+.idea/
+
+# Python build / cache
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ty_cache/
+.coverage
+.coverage.*
+htmlcov/
+dist/
+build/
+.venv/
+venv/
+
+# Project data + outputs (multi-GB)
+data/
+examples/
+tests/
+*.parquet
+*.tif
+*.tiff
+*.fgb
+*.pmtiles
+*.mbtiles
+*.zip
+
+# Tooling
+.pre-commit-config.yaml
+Makefile
+AGENTS.md
+PRICING.md
+workflows/
+
+# OS
+.DS_Store
+Thumbs.db
