@@ -30,7 +30,7 @@ re-stage. Don't fight the formatters.
 
 ```
 src/csb/             # the package
-  cli.py             # Click command group (csb download, polygonize, ...)
+  cli/               # Click command group (csb download, polygonize, ...)
   polygonize.py      # tiled raster -> polygon driver
   raster_eliminate.py# connected components + neighbor adjacency merge
   postprocess.py     # boundary join, CSBID/CSBACRES, state split

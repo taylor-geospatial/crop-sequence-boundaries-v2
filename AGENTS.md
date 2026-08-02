@@ -33,7 +33,7 @@ csb tile-sweep       # single-tile parameter sweep scored vs USDA
 
 | Module                 | Role                                                                             |
 | ---------------------- | -------------------------------------------------------------------------------- |
-| `cli.py`               | Click command group                                                              |
+| `cli/`                 | Click command group (see `cli/_group.py`)                                        |
 | `polygonize.py`        | Two-phase tiled raster → polygon driver (streaming pool)                         |
 | `postprocess.py`       | Boundary join, CSBID/CSBACRES/INSIDE_X,Y, state split                            |
 | `raster_eliminate.py`  | Label-raster connected components + neighbor adjacency + union-find merge passes |
