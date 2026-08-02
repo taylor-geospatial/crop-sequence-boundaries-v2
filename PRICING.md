@@ -99,7 +99,7 @@ and [live Spot data](https://website.spot.ec2.aws.a2z.com/spot.json).
 | Illustrative on-demand EC2 cost |      $1,019.52, Windows | $1.62, Linux |
 | Illustrative Spot EC2 cost      |        $578.95, Windows | $0.45, Linux |
 | Required GIS license            |     ArcGIS Pro Advanced |         None |
-| Output polygons                 |         fewer than 20 M |      15.44 M |
+| Output polygons                 |                 15.97 M |      15.44 M |
 | Wall-time ratio                 |                       — |         239x |
 | Core-hour ratio                 |                       — |         716x |
 

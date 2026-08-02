@@ -40,6 +40,7 @@ src/csb/             # the package
   reclass.py         # USDA CDL reclass table (bundled CSV)
   usda_filter.py     # USDA production noise filter port
   roads.py           # TIGER/Overture road+rail mask
+  tiger.py           # Census TIGER road/rail shapefile fetcher
   instance_metrics.py# panoptic quality + boundary error
   object_eval.py     # per-USDA-polygon best-match IoU
   pmtiles.py         # GeoParquet -> FlatGeobuf -> tippecanoe

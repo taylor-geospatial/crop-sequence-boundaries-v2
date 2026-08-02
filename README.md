@@ -10,8 +10,9 @@ official ArcPy CSB pipeline at
     single 32-core node (30.2 min for the configuration of record; USDA's
     published runtime: 5 days on a 96-core AWS workstation —
     [Hunt et al. 2024](https://journals.sagepub.com/doi/full/10.3233/SJI-230078)).
-- \*\*~$0.45 of modeled AWS spot compute** for those measured stages; ~$1.05
-    including the optional PMTiles and parity stages. See [PRICING.md](PRICING.md).
+- **Modeled AWS spot compute under one dollar** — ~$0.45 for those measured
+    stages, ~$1.05 including the optional PMTiles and parity stages. See
+    [PRICING.md](PRICING.md).
 - **USDA-identical output schema** (`CSBID`, `CSBYEARS`, `CSBACRES`,
     `CDL{year}`, `STATEFIPS`, `STATEASD`, `ASD`, `CNTY`, `CNTYFIPS`,
     `INSIDE_X/Y`, `Shape_Length`, `Shape_area`).
@@ -51,8 +52,8 @@ csb run-all 2018 2025 \
     --roads-mask data/tiger_roads.parquet
 ```
 
-Output: a national GeoParquet plus 48 per-state GeoParquets at
-`data/output/postprocess/2018_2025/`.
+Output: a national GeoParquet plus 48 per-state GeoParquets under
+`data/output/<run>/postprocess/2018_2025/`.
 
 ## Pipeline
 
@@ -134,15 +135,18 @@ With the configuration of record
 against USDA CSB1825 over the full CONUS extent, in **30.2 min** on a single
 32-core node.
 
-With default flags (no USDA CDL preprocessing), across 16 geospatially
-diverse 5000² test tiles (Iowa corn belt, Texas panhandle, Mississippi delta,
-Imperial Valley, Palouse, Snake River, Wisconsin dairy belt, Delmarva, …):
+Across 16 geospatially diverse 5000² test tiles (Iowa corn belt, Texas
+panhandle, Mississippi delta, Imperial Valley, Palouse, Snake River, Wisconsin
+dairy belt, Delmarva, …), with the configuration of record and with default
+flags (no USDA CDL preprocessing):
 
-| metric                    | mean  | median | min   | max   |
-| ------------------------- | ----- | ------ | ----- | ----- |
-| IoU                       | 0.846 | 0.897  | 0.543 | 0.938 |
-| polygon ratio (ours/USDA) | 1.03  | 0.92   | 0.49  | 1.59  |
-| acres ratio               | 0.94  | 0.97   | 0.70  | 1.01  |
+| metric                    | config of record | default flags |
+| ------------------------- | ---------------- | ------------- |
+| IoU, mean                 | 88.0%            | 85.2%         |
+| IoU, median               | 91.9%            | 90.3%         |
+| IoU, min / max            | 57.3% / 95.2%    | 54.9% / 94.3% |
+| polygon ratio (ours/USDA) | 1.04             | 1.04          |
+| acres ratio               | 0.93             | 0.96          |
 
 To reproduce (add `--whole-conus` to `csb parity` for the full-CONUS IoU):
 
@@ -200,8 +204,8 @@ The 2025 USDA Crop Sequence Boundaries PMTiles are public on
 yet have a tagged dataset or GitHub release. Until then, build its GeoParquet
 outputs locally with the commands above.
 
-The methodology manuscript lives in the separate
-[csb-v2-paper](https://github.com/isaaccorley/csb-v2-paper) repository.
+The methodology manuscript is maintained in a separate repository and is
+not yet public.
 
 ## Development
 

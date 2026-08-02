@@ -50,7 +50,7 @@ def bench_eliminate(
     national_cdl_dir: str,
     output: str,
 ) -> None:
-    """Time raster-side vs polygon-side (DuckDB, SedonaDB) elimination on one tile."""
+    """Time raster-side vs polygon-side (DuckDB) elimination on one tile."""
     from csb.bench import bench_tile
 
     size_list = [int(s.strip()) for s in sizes.split(",") if s.strip()]

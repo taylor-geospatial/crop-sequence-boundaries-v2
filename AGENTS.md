@@ -43,6 +43,7 @@ csb tile-sweep       # single-tile parameter sweep scored vs USDA
 | `reclass.py`           | USDA CDL temp-general-code reclass table (bundled CSV)                           |
 | `usda_filter.py`       | USDA production noise filter (RegionGroup/Con/Shrink port)                       |
 | `roads.py`             | TIGER/Overture road+rail rasterized mask                                         |
+| `tiger.py`             | Census TIGER road/rail shapefile fetcher (`csb roads-prep --source tiger`)       |
 | `focal.py`             | Legacy GEE-style focal denoise baseline (off by default)                         |
 | `instance_metrics.py`  | Panoptic quality, per-threshold F1, boundary error                               |
 | `object_eval.py`       | Directional best-match IoU per USDA polygon                                      |

@@ -54,8 +54,8 @@ dev = [
   "ruff>=0,<1",
   "ty>=0,<1",
 ]
-# SedonaDB polygon-side elimination baseline, used only by `csb bench-eliminate`
-# to compare engines. Not required by the production pipeline.
+# Extras for the polygon-side elimination baseline, used only by
+# `csb bench-eliminate`. Not required by the production pipeline.
 bench = [
   "geoarrow-pyarrow>=0.2,<1",
 ]
